@@ -22,6 +22,7 @@ Skills should be:
 ```
 skills/
   git/          – Git workflow best practices
+  conventional-commits/ – Conventional Commits guidance and validation script
   debugging/    – Systematic debugging approaches
   architecture/ – Software design principles
   code-review/  – Code review guidelines
