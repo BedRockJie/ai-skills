@@ -20,7 +20,7 @@ RECOMMENDED_CHECKS = {
 }
 
 
-def iter_skill_files(repo_root: Path) -> list[Path]:
+def find_skill_files(repo_root: Path) -> list[Path]:
     return sorted(repo_root.glob("skills/*/SKILL.md"))
 
 
@@ -81,7 +81,7 @@ def validate_skill(skill_file: Path) -> tuple[list[str], list[str]]:
 
 def main() -> int:
     repo_root = Path(__file__).resolve().parent.parent
-    skill_files = iter_skill_files(repo_root)
+    skill_files = find_skill_files(repo_root)
 
     if not skill_files:
         print("No skill files found under skills/*/SKILL.md", file=sys.stderr)
