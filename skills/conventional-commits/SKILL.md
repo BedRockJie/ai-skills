@@ -60,6 +60,12 @@ python3 skills/conventional-commits/check_commit_message.py \
 git commit -F /tmp/commit-message.txt
 ```
 
+- Or validate the latest commit message from the current repository:
+
+```bash
+python3 skills/conventional-commits/check_commit_message.py --last-commit
+```
+
 ### 4. Fix invalid messages before commit
 
 - If validation fails, rewrite the first line so it matches the format.
@@ -75,6 +81,9 @@ python3 skills/conventional-commits/check_commit_message.py \
 # Invalid: missing colon
 python3 skills/conventional-commits/check_commit_message.py \
   --message "feat(cli) add commit pre-check"
+
+# Validate the latest local commit
+python3 skills/conventional-commits/check_commit_message.py --last-commit
 ```
 
 ## References

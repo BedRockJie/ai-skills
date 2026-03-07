@@ -46,6 +46,16 @@ To use a skill, point your agent at the relevant `SKILL.md` file, e.g.:
 @file skills/git/SKILL.md
 ```
 
+## Validation
+
+This repository does not need a traditional application build, but lightweight
+automation is helpful to keep skills consistent.
+
+- Run `python3 scripts/validate_skills.py` to check required skill structure
+- Run `python3 skills/conventional-commits/check_commit_message.py --last-commit`
+  to validate the latest local commit message
+- GitHub Actions runs the same checks on pushes and pull requests
+
 ## Adding a New Skill
 
 1. Copy `templates/skill-template.md` into a new folder under `skills/`

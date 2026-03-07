@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import re
+import subprocess
 import sys
 from pathlib import Path
 
@@ -23,12 +24,31 @@ def parse_args() -> argparse.Namespace:
     group = parser.add_mutually_exclusive_group(required=True)
     group.add_argument("--message", help="Commit message text to validate.")
     group.add_argument("--file", help="Path to a file containing the commit message.")
+    group.add_argument(
+        "--last-commit",
+        action="store_true",
+        help="Read the latest commit message from the current Git repository.",
+    )
+    parser.add_argument(
+        "--repo",
+        default=".",
+        help="Repository path used with --last-commit. Defaults to the current directory.",
+    )
     return parser.parse_args()
 
 
 def read_message(args: argparse.Namespace) -> str:
     if args.message is not None:
         return args.message.strip()
+
+    if args.last_commit:
+        result = subprocess.run(
+            ["git", "-C", args.repo, "log", "-1", "--pretty=%B"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return result.stdout.strip()
 
     return Path(args.file).read_text(encoding="utf-8").strip()
 
@@ -54,7 +74,7 @@ def main() -> int:
 
     try:
         message = read_message(args)
-    except OSError as exc:
+    except (OSError, subprocess.CalledProcessError) as exc:
         print(f"Failed to read commit message: {exc}", file=sys.stderr)
         return 1
 
