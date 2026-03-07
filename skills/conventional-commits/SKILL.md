@@ -31,7 +31,8 @@ Use this skill when:
 type(optional-scope)!: short description
 ```
 
-- Keep the description short, specific, and lowercase when possible.
+- Keep the description short and specific. Lowercase wording is a useful style
+  preference, but not a strict requirement of the specification.
 - Good examples:
   - `feat: add commit message validator`
   - `fix(git): handle empty commit message`

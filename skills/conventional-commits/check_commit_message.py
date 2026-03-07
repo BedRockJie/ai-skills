@@ -10,7 +10,7 @@ from pathlib import Path
 
 HEADER_PATTERN = re.compile(
     r"^(?P<type>feat|fix|docs|style|refactor|perf|test|build|ci|chore|revert)"
-    r"(\([a-z0-9._/-]+\))?"
+    r"(\([a-z0-9-]+\))?"
     r"!?:"
     r" [^\s].*$"
 )
