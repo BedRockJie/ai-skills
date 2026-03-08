@@ -52,9 +52,14 @@ def validate_skill(skill_file: Path) -> tuple[list[str], list[str]]:
         if heading not in text:
             errors.append(f"{skill_name}: missing required section '{heading}'")
 
-    title_line = next((line for line in lines if line.startswith("# Skill:")), "")
+    title_prefix = "# Skill:"
+    title_line = next((line for line in lines if line.startswith(title_prefix)), "")
     if not title_line.strip():
         errors.append(f"{skill_name}: skill title must not be empty")
+    else:
+        title_content = title_line[len(title_prefix) :].strip()
+        if not title_content:
+            errors.append(f"{skill_name}: skill title must not be empty")
 
     purpose = paragraph_after(lines, "## Purpose")
     if not purpose:
