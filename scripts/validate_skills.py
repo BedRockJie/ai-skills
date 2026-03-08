@@ -7,7 +7,6 @@ from pathlib import Path
 
 
 REQUIRED_SECTIONS = [
-    "# Skill:",
     "## Purpose",
     "## When to use",
     "## Instructions",
@@ -24,10 +23,20 @@ def find_skill_files(repo_root: Path) -> list[Path]:
     return sorted(repo_root.glob("skills/*/SKILL.md"))
 
 
+def stripped_lines(lines: list[str]) -> list[str]:
+    return [line.strip() for line in lines]
+
+
+def find_heading_index(lines: list[str], heading: str) -> int | None:
+    for index, line in enumerate(lines):
+        if line == heading:
+            return index
+    return None
+
+
 def paragraph_after(lines: list[str], heading: str) -> str:
-    try:
-        start = lines.index(heading)
-    except ValueError:
+    start = find_heading_index(stripped_lines(lines), heading)
+    if start is None:
         return ""
 
     content: list[str] = []
@@ -43,18 +52,22 @@ def paragraph_after(lines: list[str], heading: str) -> str:
 def validate_skill(skill_file: Path) -> tuple[list[str], list[str]]:
     text = skill_file.read_text(encoding="utf-8")
     lines = text.splitlines()
+    normalized_lines = stripped_lines(lines)
     errors: list[str] = []
     warnings: list[str] = []
     skill_dir = skill_file.parent
     skill_name = skill_dir.name
 
     for heading in REQUIRED_SECTIONS:
-        if not any(line.strip() == heading for line in lines):
+        if heading not in normalized_lines:
             errors.append(f"{skill_name}: missing required section '{heading}'")
 
     title_prefix = "# Skill:"
-    title_line = next((line for line in lines if line.startswith(title_prefix)), "")
-    if not title_line.strip():
+    title_line = next(
+        (line for line in normalized_lines if line.startswith(title_prefix)),
+        "",
+    )
+    if not title_line:
         errors.append(f"{skill_name}: skill title must not be empty")
     else:
         title_content = title_line[len(title_prefix) :].strip()
@@ -73,12 +86,12 @@ def validate_skill(skill_file: Path) -> tuple[list[str], list[str]]:
     if not references:
         errors.append(f"{skill_name}: references section must include at least one entry")
 
-    has_examples_section = "## Examples" in text
+    has_examples_section = "## Examples" in normalized_lines
     has_examples_file = (skill_dir / "examples.md").exists()
     if not has_examples_section and not has_examples_file:
         warnings.append(f"{skill_name}: {RECOMMENDED_CHECKS['examples']}")
 
-    if "### 1." not in text:
+    if not any(line.startswith("### 1.") for line in normalized_lines):
         warnings.append(f"{skill_name}: {RECOMMENDED_CHECKS['numbered_instructions']}")
 
     return errors, warnings
