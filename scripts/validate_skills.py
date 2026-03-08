@@ -49,7 +49,7 @@ def validate_skill(skill_file: Path) -> tuple[list[str], list[str]]:
     skill_name = skill_dir.name
 
     for heading in REQUIRED_SECTIONS:
-        if heading not in text:
+        if not any(line.strip() == heading for line in lines):
             errors.append(f"{skill_name}: missing required section '{heading}'")
 
     title_prefix = "# Skill:"
