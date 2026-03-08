@@ -22,6 +22,7 @@ Skills should be:
 ```
 skills/
   git/          – Git workflow best practices
+  conventional-commits/ – Conventional Commits guidance and validation script
   debugging/    – Systematic debugging approaches
   architecture/ – Software design principles
   code-review/  – Code review guidelines
@@ -44,6 +45,16 @@ To use a skill, point your agent at the relevant `SKILL.md` file, e.g.:
 ```
 @file skills/git/SKILL.md
 ```
+
+## Validation
+
+This repository does not need a traditional application build, but lightweight
+automation is helpful to keep skills consistent.
+
+- Run `python3 scripts/validate_skills.py` to check required skill structure
+- Run `python3 skills/conventional-commits/check_commit_message.py --last-commit`
+  to validate the latest local commit message
+- GitHub Actions runs the same checks on pushes and pull requests
 
 ## Adding a New Skill
 

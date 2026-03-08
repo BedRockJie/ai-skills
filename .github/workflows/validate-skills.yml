@@ -1,0 +1,25 @@
+name: Validate Skills
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      - name: Validate skills structure
+        run: python3 scripts/validate_skills.py
+
+      - name: Syntax-check Python helpers
+        run: python3 -m py_compile scripts/validate_skills.py skills/conventional-commits/check_commit_message.py
