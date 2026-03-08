@@ -75,7 +75,10 @@ def main() -> int:
     try:
         message = read_message(args)
     except (OSError, subprocess.CalledProcessError) as exc:
-        print(f"Failed to read commit message: {exc}", file=sys.stderr)
+        error_message = f"Failed to read commit message: {exc}"
+        if isinstance(exc, subprocess.CalledProcessError) and exc.stderr:
+            error_message += f"\nGit error output:\n{exc.stderr.strip()}"
+        print(error_message, file=sys.stderr)
         return 1
 
     is_valid, output = validate_message(message)
