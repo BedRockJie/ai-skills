@@ -8,6 +8,7 @@
 - Codex
 - Gemini CLI
 - OpenCode
+- Cursor CLI Agent
 
 培训重点不是“问答”，而是 3 件事：
 
@@ -25,6 +26,7 @@
 | Codex | 本地工程操作、补丁式改动、终端协作 | 主力开发执行器 |
 | Gemini CLI | 超长上下文、搜索结合、多模态输入 | 大上下文分析器 |
 | OpenCode | 多 agent 编排、Provider 路由、Plan/Build 分工 | 编排器 / 实验平台 |
+| Cursor CLI Agent | IDE 规则复用、交互式审改、headless 自动化 | IDE 外延执行器 |
 
 这个表不是绝对能力排序，而是实战中的默认分工。
 
@@ -214,7 +216,7 @@ Codex 项目里还存在按角色拆分的提示文件：
 
 ---
 
-## 8. 4 类 CLI 的配置、Skills、MCP、历史记录
+## 8. 5 类 CLI 的配置、Skills、MCP、历史记录
 
 下面分成两类信息：
 
@@ -336,6 +338,50 @@ Codex 项目里还存在按角色拆分的提示文件：
 - `/agents` 管理子代理
 - `/mcp` 管理 MCP 连接
 
+### 8.5 Cursor CLI Agent
+
+官方已确认：
+
+- 安装命令：`curl https://cursor.com/install -fsS | bash`
+- CLI 入口是 `agent`
+- 支持交互式模式和 headless 模式
+- 支持文件操作、搜索、shell 命令
+- 支持 MCP，并自动读取 `mcp.json`
+- 支持规则目录 `.cursor/rules`
+- 会读取项目根目录的 `AGENTS.md` 和 `CLAUDE.md`
+- 支持恢复历史会话：`--resume [thread id]`、`cursor-agent resume`
+- 支持列出历史会话：`cursor-agent ls`
+
+本机状态：
+
+- 当前机器未核验到 Cursor CLI 命令和本地配置目录
+
+规范讲法建议：
+
+- Cursor CLI 最大价值不是“又一个聊天窗口”，而是把 Cursor Agent 从 IDE 带到终端
+- 如果团队已经在 IDE 里使用 Cursor 规则体系，CLI 可以直接复用 `.cursor/rules`
+- 如果仓库已经有 `AGENTS.md`，Cursor CLI 也会把它作为规则来源之一
+- 非交互模式适合脚本、CI、批量文档更新、安全检查
+
+适合讲的重点：
+
+- 交互模式：适合现场演示 plan、review、follow-up
+- headless 模式：适合自动化流水线
+- 规则系统：适合和 IDE 保持一致
+- MCP：适合和现有 IDE 工具链共用
+
+推荐现场口令：
+
+```text
+先不要写代码，先进入 planning。
+请先读取 AGENTS.md、.cursor/rules 和当前项目关键配置。
+给我一个执行计划，说明：
+1. 你会读取哪些文件
+2. 你准备如何修改
+3. 风险点和验证步骤
+确认后再执行
+```
+
 ---
 
 ## 9. MCP 要怎么讲
@@ -381,12 +427,14 @@ MCP 不要讲成“高级功能”，而要讲成“CLI 的扩展总线”。
 | Codex | 本地仓库操作强、补丁式修改稳 | 改代码、调脚本、处理文件 |
 | Gemini CLI | 大上下文吞吐强、搜索与多模态结合强 | 快速读大仓、读长文、读图表/PDF |
 | OpenCode | Agent 编排灵活、provider 可切换 | 多角色协作、Plan/Build 分层 |
+| Cursor CLI Agent | 复用 IDE rules/MCP、交互式审改顺手 | IDE 外终端执行、自动化 agent |
 
 建议团队默认分工：
 
 - Claude / OpenCode plan agent 负责先规划
 - Codex 负责主执行
 - Gemini 负责大上下文补充分析
+- Cursor 负责承接 IDE 规则到终端和自动化链路
 
 ---
 
@@ -463,7 +511,7 @@ MCP 不要讲成“高级功能”，而要讲成“CLI 的扩展总线”。
 ```text
 先进入 Plan 模式。
 我要写一份面向团队的 CLI 赋能讲义。
-重点包括 Claude Code、Codex、Gemini CLI、OpenCode。
+重点包括 Claude Code、Codex、Gemini CLI、OpenCode、Cursor CLI Agent。
 请先读取项目里的关键上下文文件，并输出文档大纲。
 文档必须覆盖：
 1. CLI 启动即初始化
