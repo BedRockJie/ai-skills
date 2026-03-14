@@ -13,23 +13,39 @@ This repository contains modular **skills** that can be used by AI agents such a
 
 ## Philosophy
 
-Skills should be:
+A **skill** is not a knowledge base.  It is an executable procedure — a
+precise description of what an AI agent *does*, not what it *knows*.
 
-- **Small** – Each skill covers one focused concern
-- **Composable** – Skills can be combined together
-- **Source-traceable** – All inspiration and references are documented
+Every skill has:
+
+- **Inputs** — what the agent needs before starting
+- **Instructions** — ordered, imperative steps the agent executes
+- **Output** — the specific artifact the agent produces
+- **Tool (where possible)** — a script the agent runs and acts on
+
+The `conventional-commits` skill is the reference model: it takes a commit
+message as input, runs `check_commit_message.py`, and either passes or rewrites
+the message.  Every other skill follows the same pattern.
+
+Skills are:
+
+- **Small** – Each skill covers one focused task
+- **Composable** – Skills can reference each other (e.g., debugging calls fault-decode)
+- **Action-oriented** – Instructions start with a verb and produce a concrete artifact
 
 ## Structure
 
 ```
 skills/
-  git/                  – Git workflow for embedded firmware
-                          (branching, binary artifacts, hardware-rev tags, submodules)
-  conventional-commits/ – Conventional Commits guidance and validation script
-  debugging/            – Embedded debugging: JTAG/SWD, GDB, HardFault, UART log
-  architecture/         – Embedded firmware architecture: layered design, memory map, RTOS
-  code-review/          – Embedded code review: volatile, ISR safety, MISRA-C, memory
-  testing/              – Embedded testing: Unity/CMock, host-side, static analysis
+  conventional-commits/ – Write and validate commit messages (reference skill)
+  fault-decode/         – Decode Cortex-M fault registers → diagnosis + fix hint
+                          Tool: decode_cortexm_fault.py
+  peripheral-init/      – Generate peripheral init code from MCU spec
+  architecture/         – Produce component map + memory sketch + ADR
+  code-review/          – Execute ordered checklist → formatted findings list
+  debugging/            – Run diagnostic procedure → root-cause + minimum fix
+  git/                  – Execute git command sequences for firmware tasks
+  testing/              – Generate Unity test stub from header → run on host
 
 references/     – Attribution for external sources
 templates/      – Templates for adding new skills

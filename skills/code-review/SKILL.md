@@ -1,140 +1,139 @@
-# Skill: Embedded Code Review
+# Skill: Embedded C Code Review
 
 ## Purpose
 
-Help AI agents perform thorough, safety-conscious code reviews for embedded
-firmware — covering correctness, hardware-software interface integrity,
-memory safety, and real-time constraints.
+Execute a systematic, ordered checklist against a C firmware diff and produce a
+formatted list of findings — each tagged as `nit:`, `suggestion:`, `question:`,
+or `blocker:` — ready to post as review comments.
 
 ## When to use
 
 Use this skill when:
 
-- Reviewing a pull request or patch for firmware running on MCUs or SoCs
-- Self-reviewing changes before requesting a peer review
-- Establishing or enforcing a team code-review standard for C/C++ firmware
+- Reviewing a pull request or patch for MCU / SoC firmware
+- Self-reviewing before requesting a peer review
+- Auditing a driver or HAL module for common embedded defects
+
+## Inputs
+
+- The diff or file(s) to review
+- MCU family (to interpret register names and peripheral sequences)
+- RTOS in use, if any (FreeRTOS, Zephyr, bare-metal)
 
 ## Instructions
 
-### 1. Understand the hardware context before commenting
+Work through the checks **in order**.  For each finding emit one comment block
+in the format shown at the end of this section.  Stop and emit a `blocker:` as
+soon as one is found — do not defer blockers to later checks.
 
-- Read the target MCU/SoC datasheet section relevant to the changed peripheral.
-- Check the PR description: which hardware revision, which toolchain, which RTOS
-  (or bare-metal) does this change run on?
-- Understand *why* the change was made — a register write sequence is often
-  dictated by the hardware errata, not developer preference.
+### 1. Scan for missing `volatile` on MMIO and ISR-shared variables
 
-### 2. Check volatile and memory-mapped register correctness
+For every struct that maps to a hardware register address, verify:
 
-- Every memory-mapped register struct must use `volatile`:
-  ```c
-  /* Correct */
-  volatile uint32_t *const SR = (volatile uint32_t *)0x40013000;
+```c
+/* Required */
+volatile uint32_t * const SR = (volatile uint32_t *)0x40013000;
 
-  /* Wrong — compiler may cache the read */
-  uint32_t *const SR = (uint32_t *)0x40013000;
-  ```
-- Variables shared between an ISR and non-ISR context must be `volatile`.
-- Verify that read-modify-write on status registers does not accidentally
-  clear write-1-to-clear (W1C) bits unintentionally.
+/* Flag this — compiler may cache the read at -O2 */
+uint32_t * const SR = (uint32_t *)0x40013000;
+```
+
+Also flag any variable written in an ISR and read in task context (or vice
+versa) that lacks `volatile` or an atomic/critical-section guard.
+
+Emit: `blocker: [file:line] missing volatile — compiler may eliminate …`
+
+### 2. Check W1C register access
+
+Read-modify-write on a status register with write-1-to-clear bits silently
+clears other pending flags.  Pattern to flag:
+
+```c
+/* Dangerous — clears all W1C bits in the status register */
+USART1->SR &= ~USART_SR_ORE;
+
+/* Correct — touch only the target bit */
+USART1->SR = USART_SR_ORE;
+```
+
+Emit: `blocker: [file:line] RMW on W1C register clears unrelated flag bits`
 
 ### 3. Check ISR safety
 
-- ISR functions must not call any blocking or non-reentrant APIs
-  (e.g., `printf`, `malloc`, RTOS blocking calls like `xQueueSend` —
-  use `xQueueSendFromISR` instead).
-- Verify that shared data structures accessed from both ISR and task context
-  are protected with critical sections or atomic operations:
-  ```c
-  /* ARM Cortex-M: disable/enable interrupts around shared data */
-  __disable_irq();
-  shared_counter++;
-  __enable_irq();
-  ```
-- ISR handlers must be as short as possible — defer work to a task via a
-  queue or semaphore; do not process data inside the ISR.
+For each ISR function (identified by NVIC registration or `__attribute__((interrupt))`):
 
-### 4. Check memory safety and stack usage
+- Flag any call to a blocking API: `printf`, `malloc`, `vTaskDelay`,
+  `xQueueSend` (non-ISR variant), `HAL_Delay`, `osDelay`.
+- Flag direct RTOS queue/semaphore operations — require `FromISR` variants.
+- Flag large local arrays (>= 64 bytes) — each ISR has its own stack frame.
 
-- Reject dynamic memory allocation (`malloc`/`free`) in bare-metal or
-  MISRA-compliant firmware unless explicitly approved and bounded.
-- Review stack-allocated arrays in ISRs — each ISR uses its own stack
-  frame; large local arrays may cause hard faults.
-- Confirm that string / buffer operations are bounded:
-  ```c
-  /* Unsafe */
-  strcpy(dst, src);
+Emit: `blocker: [file:line] blocking call inside ISR — use xQueueSendFromISR`
 
-  /* Safe */
-  strncpy(dst, src, sizeof(dst) - 1);
-  dst[sizeof(dst) - 1] = '\0';
-  ```
-- Check for signed/unsigned mismatch in array index calculations that
-  could produce unexpected wrap-around.
+### 4. Check memory safety
 
-### 5. Check peripheral driver correctness
+- Flag `strcpy`, `sprintf`, `gets`, `memcpy` without bounded equivalents.
+- Flag `malloc`/`free` in bare-metal or MISRA-scoped code unless approved.
+- Flag signed/unsigned mismatch in array index arithmetic.
 
-- Register initialisation sequences must match the datasheet order
-  (some peripherals require enable → configure → start, not the reverse).
-- Verify clock enable calls before any peripheral register access
-  (e.g., `__HAL_RCC_USART1_CLK_ENABLE()` on STM32 must precede USART config).
-- DMA descriptors and buffers must reside in DMA-accessible memory regions;
-  flag any buffers placed in DTCM/CCM if the DMA cannot reach those regions.
-- Confirm timeout values in polling loops to prevent CPU lockup:
-  ```c
-  uint32_t timeout = 1000; /* ticks */
-  while (!(USART1->SR & USART_SR_TC) && timeout--) {}
-  if (timeout == 0) { return ERROR_TIMEOUT; }
-  ```
+Emit: `blocker: [file:line] unbounded copy — use strncpy(dst, src, sizeof(dst)-1)`
 
-### 6. Check real-time and RTOS usage
+### 5. Check peripheral driver sequence
 
-- Task stack sizes must be reviewed against call-tree depth plus local variables.
-- RTOS primitive usage must match context: use `FromISR` variants inside ISRs.
-- Verify no task calls a driver function that disables interrupts for longer
-  than the system's worst-case interrupt latency budget.
-- Check that task priorities are assigned intentionally (higher-priority tasks
-  should complete faster; avoid priority inversion by using mutexes with
-  priority inheritance).
+- Clock-enable call must appear **before** any register access for that
+  peripheral (`RCC->APB1ENR |= ...` on STM32; equivalent on other families).
+- Configuration registers must be written before the peripheral-enable bit.
+- Poll loops must have a timeout:
 
-### 7. Check for MISRA-C key rules (where applicable)
+```c
+/* Flag — no timeout */
+while (!(USART1->SR & USART_SR_TC)) {}
 
-| Rule | What to look for |
-|---|---|
-| Rule 14.4 | Controlling expression of `if`/`while` must be essentially Boolean |
-| Rule 15.5 | Return statement at end of function only |
-| Rule 17.3 | No implicit function declarations |
-| Rule 21.3 | No dynamic memory allocation after initialisation |
-| Rule 21.6 | No use of `printf` family in production code |
-
-Flag MISRA deviations with a `/* MISRA deviation: Rule X.Y – reason */` comment.
-
-### 8. Comment constructively
-
-Use a tiered comment style:
-
-| Prefix | Meaning |
-|---|---|
-| `nit:` | Minor style preference – author may choose to ignore |
-| `suggestion:` | Improvement idea – not blocking |
-| `question:` | Seeking hardware or design clarification – not necessarily a problem |
-| `blocker:` | Must be addressed before merge (safety, correctness, or data corruption) |
-
-Example:
-
-```
-blocker: SR is not declared volatile; the compiler may optimise away the
-poll loop entirely on -O2. Declare as volatile uint32_t *.
-
-question: The datasheet errata (rev C, §2.1) notes a required delay between
-enabling the PLL and selecting it as clock source. Is that handled here?
+/* Required */
+uint32_t t = 1000;
+while (!(USART1->SR & USART_SR_TC) && t--) {}
+if (t == 0) { return ERR_TIMEOUT; }
 ```
 
-### 9. Approve or request changes clearly
+Emit: `blocker: [file:line] clock enable missing before peripheral access`
+Emit: `blocker: [file:line] unbounded poll — add timeout counter`
 
-- Approve when correctness, ISR safety, and memory safety are satisfied.
-- Request changes when there is at least one `blocker:` comment.
-- Do not leave reviews in a perpetual "commented" state — decide.
+### 6. Check RTOS usage
+
+- Task stack sizes: flag if the task's call depth + local variable totals could
+  exceed the configured stack words.
+- Priority assignment: flag if a higher-priority task performs more work than
+  a lower-priority one (likely inversion).
+- DMA buffers: flag any buffer in DTCM/CCM when the DMA controller cannot
+  reach that memory region.
+
+Emit: `suggestion: [file:line] DMA buffer in CCM — DMA1 cannot access this region`
+
+### 7. Note MISRA-C deviations (where project uses MISRA)
+
+Flag these specific rules with the required deviation comment format:
+
+| Rule | What to flag |
+|------|--------------|
+| 14.4 | `if`/`while` controlling expression not essentially Boolean |
+| 21.3 | `malloc`/`free` after initialisation phase |
+| 21.6 | `printf` family in production code |
+| 15.5 | Multiple return points in a function |
+
+Emit: `nit: [file:line] MISRA Rule 21.6 deviation — add /* MISRA deviation: … */ comment`
+
+### 8. Approve or request changes
+
+- **Approve** when no `blocker:` findings remain.
+- **Request changes** when one or more `blocker:` items exist.
+- Every finding must be one of: `nit:` / `suggestion:` / `question:` / `blocker:`
+
+Comment format:
+
+```
+<tag>: [file.c:line] <one-sentence description of the problem>
+  Expected: <what correct code looks like>
+  Actual:   <what the diff shows>
+```
 
 ## Examples
 
@@ -143,6 +142,5 @@ See [examples.md](examples.md).
 ## References
 
 - [MISRA-C:2012 Guidelines](https://www.misra.org.uk/)
-- [ARM Cortex-M System Design Reference](https://developer.arm.com/documentation/dui0552/latest/)
-- [Google Engineering Practices – Code Review](https://google.github.io/eng-practices/review/)
 - [Barr Group Embedded C Coding Standard](https://barrgroup.com/embedded-systems/books/embedded-c-coding-standard)
+- [ARM Cortex-M System Design Reference](https://developer.arm.com/documentation/dui0552/latest/)

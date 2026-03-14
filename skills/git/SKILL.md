@@ -2,58 +2,64 @@
 
 ## Purpose
 
-Help AI agents follow clean, traceable Git workflows when developing embedded
-firmware — covering branch naming, binary artifact handling, hardware-revision
-tagging, vendor SDK submodules, and multi-platform release management.
+Execute the correct Git command sequence for each firmware task — branching,
+committing, ignoring build artifacts, managing vendor SDKs, tagging releases
+with hardware revision, and cleaning history before a PR.
 
 ## When to use
 
 Use this skill when:
 
-- Creating a branch for a firmware feature, driver fix, or board bring-up
-- Tagging a firmware release that must be tied to a hardware revision
-- Managing vendor SDK or HAL source code as a submodule
-- Handling binary build artifacts (`.hex`, `.elf`, `.bin`, `.map`)
-- Resolving merge conflicts in generated files (linker maps, auto-generated headers)
+- Starting work on a new driver, board bring-up, or firmware fix
+- Tagging a release tied to a specific PCB revision
+- Adding or updating a vendor SDK / HAL submodule
+- Keeping binary build artifacts out of the repository
 - Preparing a clean commit history before opening a PR
 
 ## Instructions
 
-### 1. Branching
-
-Use descriptive branch names that include the target board or subsystem:
+### 1. Create a branch
 
 ```bash
-git checkout -b feature/stm32h7-can-driver
-git checkout -b fix/nxp-i2c-timeout-issue-42
-git checkout -b bringup/new-rev-c-pcb
-git checkout -b chore/update-freertos-10.6
+# New peripheral driver
+git checkout -b feature/<board>-<peripheral>-driver
+# Example: git checkout -b feature/stm32h7-fdcan-driver
+
+# Bug fix (reference issue number)
+git checkout -b fix/<subsystem>-issue-<N>
+# Example: git checkout -b fix/spi2-clock-enable-issue-42
+
+# New hardware revision bring-up
+git checkout -b bringup/hw-rev-<X>
+# Example: git checkout -b bringup/hw-rev-d
+
+# Vendor SDK / toolchain update
+git checkout -b chore/update-<vendor>-<version>
+# Example: git checkout -b chore/update-freertos-10.6
 ```
 
-- Branch off `main` (or `develop`) unless told otherwise.
-- Include the board or SoC family in the name when a branch is hardware-specific.
+Always branch off `main` (or `develop`) unless a long-lived release branch
+exists for the target hardware.
 
-### 2. Commits
-
-- Write imperative-mood subject lines under 72 characters.
-- Reference issue or hardware errata numbers when relevant:
+### 2. Commit — pair with the conventional-commits skill
 
 ```bash
-git commit -m "fix(spi2): add clock enable before register access
+python3 skills/conventional-commits/check_commit_message.py \
+    --message "fix(spi2): enable APB1 clock before register access"
+git commit -m "fix(spi2): enable APB1 clock before register access
 
-RCC->APB1ENR SPI2EN must be set before any SPI2 register access
-or the peripheral returns 0xFFFFFFFF. Confirmed on STM32H743 rev V.
-Closes #23"
+RCC->APB1ENR SPI2EN must be set before any SPI2 register access.
+Reading an ungated peripheral returns 0xFFFFFFFF and triggers PRECISERR.
+Confirmed on STM32H743 rev V errata §2.3.4.
+Closes #42"
 ```
-
-- Pair with the conventional-commits skill to format the type and scope.
 
 ### 3. Ignore build artifacts — never commit binaries to history
 
-Keep generated files out of the repository. Add them to `.gitignore`:
+Add to `.gitignore`:
 
 ```
-# Build outputs
+# Toolchain outputs
 build/
 *.elf
 *.hex
@@ -63,8 +69,9 @@ build/
 *.d
 *.o
 *.a
+*.su
 
-# IDE project files (vendor-specific)
+# IDE / vendor-generated files
 .settings/
 *.uvoptx
 *.uvprojx.bak
@@ -72,106 +79,91 @@ Debug/
 Release/
 ```
 
-Use **Git LFS** only when binary release artifacts (signed firmware images,
-golden `.hex` files) must be stored alongside the source for traceability:
+Use **Git LFS only** for signed release binaries that must be stored alongside
+source for traceability (regulatory audit trails, golden images):
 
 ```bash
 git lfs track "release/*.hex"
 git lfs track "release/*.bin"
 git add .gitattributes
+git commit -m "chore(lfs): track signed release images"
 ```
 
-### 4. Manage vendor SDKs with submodules
-
-Never copy vendor SDK/HAL source directly into the repository — use submodules
-to keep the vendor code versioned and auditable:
+### 4. Add or update a vendor SDK submodule
 
 ```bash
-# Add STM32 HAL as a submodule at a specific tag
+# Add — pin to a specific release tag
 git submodule add https://github.com/STMicroelectronics/stm32h7xx_hal_driver.git \
     lib/stm32h7xx_hal
-
-cd lib/stm32h7xx_hal
-git checkout v1.11.3   # pin to a specific release
-cd ../..
+cd lib/stm32h7xx_hal && git checkout v1.11.3 && cd ../..
 git add lib/stm32h7xx_hal .gitmodules
-git commit -m "chore(hal): pin STM32H7 HAL to v1.11.3"
-```
+git commit -m "chore(hal): add STM32H7 HAL submodule at v1.11.3"
 
-Cloning with submodules:
-
-```bash
+# Clone a repo that already has submodules
 git clone --recurse-submodules <repo-url>
 # or, after a plain clone:
 git submodule update --init --recursive
-```
 
-Updating a submodule to a newer release:
-
-```bash
-cd lib/stm32h7xx_hal
-git fetch && git checkout v1.12.0
-cd ../..
+# Update to a newer release
+cd lib/stm32h7xx_hal && git fetch && git checkout v1.12.0 && cd ../..
 git add lib/stm32h7xx_hal
 git commit -m "chore(hal): upgrade STM32H7 HAL from v1.11.3 to v1.12.0"
 ```
 
-### 5. Tagging releases with hardware revision
+### 5. Tag a release with hardware revision
 
-Firmware releases must record both the software version and the compatible
-hardware revision:
+Format: `v<major>.<minor>.<patch>+hw<Revision>`
 
 ```bash
-# Format: v<major>.<minor>.<patch>+hw<revision>
 git tag -a "v2.1.0+hwC" -m "Release v2.1.0 for PCB rev C
 
 Changelog:
 - feat(can): increase TX FIFO depth to 64 frames
-- fix(adc): apply errata workaround for STM32H743 rev V silicon
+- fix(adc): apply errata workaround for STM32H743 rev V
 - chore(hal): upgrade STM32H7 HAL to v1.12.0
 
-Compatible hardware: PCB rev C (schematic: SCH-2024-003-C)
-Build toolchain: arm-none-eabi-gcc 13.2 + CMake 3.28"
+Compatible hardware: PCB rev C (schematic SCH-2024-003-C)
+Toolchain: arm-none-eabi-gcc 13.2 + CMake 3.28"
+
 git push origin "v2.1.0+hwC"
 ```
 
-- Increment hardware revision in the tag whenever the PCB changes in a way
-  that requires different firmware behaviour.
-- Store the hardware revision in a build-time constant for runtime checks:
+Add a compile-time hardware revision check to catch firmware/hardware mismatches:
 
 ```c
-#define HW_REVISION_REQUIRED  'C'
+#define HW_REVISION_REQUIRED 'C'
 
-void board_check_revision(void) {
-    char rev = read_hw_id_pins();
+void board_check_hw_revision(void) {
+    char rev = board_read_id_pins();
     if (rev != HW_REVISION_REQUIRED) {
-        log_error("Firmware built for hw rev %c, running on rev %c",
+        LOG_ERROR("Firmware built for hw rev %c, running on rev %c",
                   HW_REVISION_REQUIRED, rev);
     }
 }
 ```
 
-### 6. Keep history clean before a PR
-
-- Prefer `git rebase` over `git merge` for integrating upstream changes on
-  feature branches.
-- Squash fixup commits before opening a PR:
+### 6. Clean history before a PR
 
 ```bash
-git rebase -i HEAD~<n>
-# In the editor: mark fixup commits as 'fixup' or 'squash'
+# Squash fixup commits interactively
+git rebase -i HEAD~<N>
+# In the editor: change 'pick' to 'fixup' for WIP/typo commits
+
+# Rebase onto updated main instead of merge
+git fetch origin
+git rebase origin/main
 ```
 
-### 7. Conflict resolution in generated files
+### 7. Resolve generated-file conflicts
 
-Linker map files and auto-generated HAL init code often produce conflicts.
-Prefer re-generation over manual merging:
+Linker map files and CubeMX / MCUXpresso-generated files produce conflicts.
+Re-generate rather than manually merge:
 
 ```bash
-git status                        # identify conflicting generated files
-git checkout --theirs path/to/generated_file.c
-# Re-run the code generator or CubeMX to produce a clean output
-git add path/to/generated_file.c
+git status                             # find conflicting generated file
+git checkout --theirs path/to/file.c  # take their version as base
+# Re-run the code generator (CubeMX, STM32CubeIDE) to produce clean output
+git add path/to/file.c
 git rebase --continue
 ```
 

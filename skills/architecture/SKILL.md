@@ -1,153 +1,131 @@
-# Skill: Embedded Firmware Architecture
+# Skill: Firmware Architecture Decision Maker
 
 ## Purpose
 
-Help AI agents reason about and design firmware architecture for embedded
-systems — covering SoC/MCU platform constraints, layered software structure,
-memory layout, execution model selection, and hardware-software partitioning.
+Produce three concrete artifacts — a **component map**, a **memory sketch**,
+and one or more **ADRs** — for an embedded firmware project given hardware
+constraints and requirements.
 
 ## When to use
 
 Use this skill when:
 
-- Starting firmware design for a new SoC or MCU (ARM Cortex-M/A/R, x86, RISC-V,
-  AMD/Intel embedded)
-- Partitioning responsibilities between BSP, HAL, middleware, and application
-- Choosing between bare-metal and RTOS execution models
-- Planning flash and RAM memory layout before writing linker scripts
-- Writing Architecture Decision Records (ADRs) for significant firmware choices
+- Starting firmware for a new MCU or SoC board
+- Deciding between bare-metal and RTOS execution models
+- Documenting a significant firmware design choice for the team
+- Reviewing a proposed architecture before implementation begins
+
+## Inputs
+
+Collect these before starting:
+
+| Input | Example |
+|-------|---------|
+| MCU / SoC | STM32H743, i.MX RT1060, nRF5340 |
+| Flash / SRAM sizes | 2 MB Flash, 512 KB SRAM |
+| Concurrent workloads | "Motor control 20 kHz + CAN 100 Hz + UART CLI" |
+| Hard deadline | "Motor ISR ≤ 50 µs worst-case jitter" |
+| Safety standard | None / IEC 61508 SIL-2 / ISO 26262 ASIL-B |
+| Memory allocation strategy | "Static only" / "FreeRTOS heap_4" |
 
 ## Instructions
 
-### 1. Capture platform constraints first
+### 1. Select the execution model
 
-Before proposing any design, gather:
+Answer all four questions; use the **first row that matches**:
 
-- **Target device** – vendor, family, core (e.g., STM32H743, Cortex-M7 @ 480 MHz)
-- **Memory budget** – internal Flash/SRAM sizes; external memory (QSPI Flash,
-  SDRAM, EEPROM)
-- **Peripherals in use** – UART, SPI, I2C, CAN, USB, DMA, ADC, timers
-- **Real-time requirements** – hard/soft deadlines, worst-case interrupt latency
-- **Power budget** – active current ceiling, required sleep modes, wake sources
-- **Safety or compliance** – IEC 61508, ISO 26262, MISRA-C applicability
+| Condition | Model |
+|-----------|-------|
+| ≤ 2 concurrent workloads, no blocking I/O | Bare-metal super-loop |
+| ≥ 1 latency-critical ISR + background loop | Bare-metal + ISR |
+| ≥ 3 independent deadlines, or any blocking I/O | RTOS (FreeRTOS / Zephyr / ThreadX) |
+| Mixed safety levels or mixed OS on multi-core SoC | AMP (per-core assignment) |
 
-### 2. Choose the execution model
+Record the selected model. This becomes the subject of the first ADR.
 
-| Model | When to use |
-|---|---|
-| Bare-metal super-loop | ≤ 2 concurrent concerns, no blocking I/O, ≤ 32 KB RAM |
-| Bare-metal + ISR | Latency-critical events plus background processing |
-| RTOS (FreeRTOS, Zephyr, ThreadX) | ≥ 3 independent tasks, blocking I/O, deadline management |
-| Asymmetric multi-core (AMP) | Mixed safety criticality or mixed OS on multi-core SoC |
+### 2. Fill in the component map
 
-Document the decision as an ADR (see step 5).
-
-### 3. Define the layered firmware architecture
-
-Organise firmware top-down and enforce strict layer boundaries:
+List every software component — one row per component:
 
 ```
-┌──────────────────────────────────────────────┐
-│  Application Layer                           │
-│  (state machines, protocols, business logic) │
-├──────────────────────────────────────────────┤
-│  Middleware / Services                       │
-│  (FatFS, LwIP, MQTT, USB stack, RTOS APIs)   │
-├──────────────────────────────────────────────┤
-│  HAL / Driver Layer                          │
-│  (UART, SPI, DMA, ADC, CAN drivers)          │
-├──────────────────────────────────────────────┤
-│  BSP / CMSIS / Vendor SDK                   │
-│  (clock init, pin mux, startup, vector table)│
-├──────────────────────────────────────────────┤
-│  Hardware                                    │
-│  (registers, on-chip peripherals, board)     │
-└──────────────────────────────────────────────┘
+Layer         | Component            | Owns
+──────────────┼──────────────────────┼────────────────────────────────
+Application   | sensor_fusion        | Kalman filter, output queue
+Application   | ota_manager          | Image validation, slot swap
+Middleware    | freertos_tasks       | Task creation, scheduler config
+HAL / Driver  | spi2_driver          | SPI2 peripheral, DMA channel 3
+HAL / Driver  | can_driver           | FDCAN1, TX queue, RX ISR
+BSP           | board_init           | Clocks, pin mux, vector table
 ```
 
-Rules:
-- Upper layers call downward only; hardware registers are never accessed
-  above the HAL boundary.
-- Each driver owns exactly one peripheral instance.
-- HAL functions must be re-entrant, or clearly documented when they are not.
-- Keep vendor SDK code in a versioned submodule — never edit it directly.
+Rule: a component may call only components in the same or lower layer.
+Flag any component in Application or Middleware that accesses hardware
+registers directly — those accesses belong in HAL or BSP.
 
-### 4. Define the memory map
-
-Sketch the linker-script regions before coding:
+### 3. Fill in the memory sketch
 
 ```
-Flash (example: 2 MB @ 0x08000000)
-  0x08000000  Interrupt vector table
-  0x08000400  Bootloader / secure boot partition
-  0x08010000  Application image slot A
-  0x08100000  Application image slot B  (OTA update)
-  0x081F0000  NVM / configuration page
+Flash (<SIZE> KB @ <BASE>)
+  +0x000  Vector table + startup code
+  +0x400  [Bootloader, if present]
+  +XXXX   Application (slot A)
+  +YYYY   [OTA slot B, if OTA required]
+  +ZZZZ   [NVM / config page, if needed]
 
-SRAM (example: 512 KB SRAM1 + 128 KB DTCM)
-  0x20000000  .data  (initialised globals)
-  0x20010000  .bss   (zero-initialised globals)
-  0x20020000  Heap   (keep minimal; prefer static allocation)
-  0x2003C000  Stack  (grows downward; add guard page)
-  0x20000000  DTCM   (ISR stacks, time-critical buffers — fastest access)
+SRAM (<SIZE> KB @ <BASE>)
+  .data   initialised globals      ~X KB
+  .bss    zero-initialised globals ~Y KB
+  heap    [static pool / none]      Z KB
+  stack   grows downward            W KB  ← MPU guard page recommended
+  [DTCM/CCM for ISR stacks and timing-critical buffers, if available]
 ```
 
-- Prefer **static allocation** in safety-critical or memory-constrained targets.
-- Place ISR stacks and hot data in DTCM/ITCM (Cortex-M7) for lowest latency.
-- Use `__attribute__((section(".dtcm")))` to force placement explicitly.
+Flag if `.data + .bss + heap + stack > available SRAM`.
 
-### 5. Assign NVIC interrupt priority bands
+### 4. Fill in the NVIC priority band table
 
-Prevent priority inversion by partitioning Cortex-M NVIC priorities:
+```
+Band 0–1    Safety:    [watchdog refresh, critical-fault handler]
+Band 2–4    Hard RT:   [motor PWM, sensor-sampling ISR]
+Band 5–8    Soft RT:   [UART RX, CAN RX, SPI complete]
+Band 9–12   Comms:     [USB DMA, Ethernet descriptor]
+Band 13–15  RTOS:      [SysTick, PendSV — must be lowest preemptible]
+```
 
-| Band | Priority range | Typical users |
-|---|---|---|
-| Safety / watchdog | 0 – 1 | WDT refresh, hard-fault escalation |
-| Hard real-time | 2 – 4 | Motor PWM update, sensor sampling ISR |
-| Soft real-time | 5 – 8 | UART RX, CAN receive, SPI completion |
-| Background comms | 9 – 12 | USB DMA, Ethernet descriptor handling |
-| RTOS kernel | 13 – 15 | SysTick, PendSV (lowest preemptible) |
+Fill in actual ISR names from the project.  Flag any ISR that calls a blocking
+RTOS API (xQueueSend, osDelay, etc.) from a priority above
+`configMAX_SYSCALL_INTERRUPT_PRIORITY`.
 
-Never call RTOS blocking APIs from priorities 0–`configMAX_SYSCALL_INTERRUPT_PRIORITY`.
+### 5. Write an ADR for each significant decision
 
-### 6. Write an ADR for significant decisions
+One ADR per choice (execution model, memory strategy, IPC mechanism).
 
 ```markdown
-# ADR-001: Use FreeRTOS with static allocation only
+# ADR-NNN: <title>
 
 ## Status
-Accepted
+Accepted | Proposed | Superseded by ADR-XXX
 
 ## Context
-The product requires concurrent handling of sensor fusion (1 kHz),
-CAN telemetry (100 Hz), and async OTA update. Three independent deadlines
-make a bare-metal super-loop fragile and difficult to maintain.
+<One paragraph: what constraint or requirement forced this decision>
 
 ## Decision
-Use FreeRTOS with configSUPPORT_DYNAMIC_ALLOCATION=0 (static tasks/queues only).
+<One sentence: the choice made>
 
 ## Consequences
-+ Clear task prioritisation; blocking drivers are simplified
-+ Static-only allocation → deterministic memory, MISRA-C compliance easier
-- ~8 KB Flash overhead for the FreeRTOS kernel
-- Team must follow FreeRTOS API rules (no ISR-unsafe calls from tasks)
++ <benefit 1>
++ <benefit 2>
+- <trade-off 1>
+- <trade-off 2>
 ```
 
-### 7. Review for common embedded architecture pitfalls
+## Output
 
-- **Missing `volatile`** – memory-mapped registers and ISR-shared variables must
-  be declared `volatile`; omitting it allows the compiler to cache stale values.
-- **Stack overflow** – calculate worst-case stack depth with a call-tree analysis;
-  enable `configCHECK_FOR_STACK_OVERFLOW` in FreeRTOS during development.
-- **Forgotten clock gating** – always enable the peripheral clock (e.g., via RCC
-  on STM32) before accessing any register; reading an ungated peripheral returns
-  undefined data.
-- **FPU context in ISRs** – if ISRs use floating-point, save/restore the FPU
-  context explicitly or restrict FP to a single protected task.
-- **Busy-wait spin loops** – replace `while (!(reg & flag));` with timeout
-  counters or event flags to prevent CPU hogging and watchdog starvation.
-- **Toolchain-specific behaviour** – document compiler flags (`-O2`, LTO, whole-
-  program optimisation) that affect volatile, inlining, and section placement.
+Deliver these three artifacts:
+
+1. **Component map** — filled table from step 2
+2. **Memory sketch** — filled template from step 3
+3. **ADR(s)** — one file per major decision (step 5)
 
 ## Examples
 
@@ -159,4 +137,3 @@ See [examples.md](examples.md).
 - [FreeRTOS Reference Manual](https://www.freertos.org/Documentation/RTOS_book.html)
 - [Zephyr RTOS Architecture Docs](https://docs.zephyrproject.org/latest/kernel/index.html)
 - [MISRA-C:2012 Guidelines](https://www.misra.org.uk/)
-- [Embedded Systems Architecture – Daniele Lacamera](https://www.packtpub.com/product/embedded-systems-architecture/9781788832502)
