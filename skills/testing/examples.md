@@ -1,190 +1,189 @@
-# Embedded Firmware Testing – Examples
+# C Unit Testing — Examples
 
-## Example 1: Unit-testing a CRC-16 module with Unity
+## Example 1: CRC-8 module
 
 **Directory layout:**
 
 ```
 src/
-  crc16.c
-  crc16.h
+  crc8.c
+  crc8.h
 test/
-  test_crc16.c
-CMakeLists.txt
+  test_crc8.c
+  test_utils.h   ← written automatically by test_runner.py
 ```
 
-**test/test_crc16.c:**
+**src/crc8.h:**
 
 ```c
-#include "unity.h"
-#include "crc16.h"
+#pragma once
+#include <stdint.h>
+#include <stddef.h>
 
-void setUp(void) {}
-void tearDown(void) {}
+uint8_t crc8_compute(const uint8_t *data, size_t len);
+```
 
-/* Known test vector from the CRC-16/CCITT-FALSE spec */
-void test_crc16_known_vector_0x313233(void) {
+**test/test_crc8.c:**
+
+```c
+#include "test_utils.h"
+#include "../src/crc8.h"
+
+static void test_crc8_empty_returns_zero(void) {
+    TEST_ASSERT(crc8_compute(NULL, 0) == 0x00, "empty data should return 0x00");
+}
+
+static void test_crc8_known_vector(void) {
     const uint8_t data[] = {0x31, 0x32, 0x33};
-    TEST_ASSERT_EQUAL_HEX16(0x29B1, crc16_compute(data, sizeof(data)));
+    TEST_ASSERT_EQ(0xC0, crc8_compute(data, sizeof(data)),
+                   "crc8({0x31,0x32,0x33}) should be 0xC0");
 }
 
-void test_crc16_single_byte_0x00(void) {
+static void test_crc8_single_zero_byte(void) {
     const uint8_t data[] = {0x00};
-    /* Verify against software reference, not hardware */
-    uint16_t result = crc16_compute(data, 1);
-    TEST_ASSERT_NOT_EQUAL(0x0000, result); /* must not be trivially zero */
+    TEST_ASSERT_EQ(0x00, crc8_compute(data, 1), "crc8(0x00) should be 0x00");
 }
 
-void test_crc16_null_or_zero_length_returns_initial_value(void) {
-    TEST_ASSERT_EQUAL_HEX16(0xFFFF, crc16_compute(NULL, 0));
-    const uint8_t buf[4] = {0};
-    TEST_ASSERT_EQUAL_HEX16(0xFFFF, crc16_compute(buf, 0));
+int main(void) {
+    RUN_TESTS(
+        test_crc8_empty_returns_zero,
+        test_crc8_known_vector,
+        test_crc8_single_zero_byte,
+    );
 }
 ```
 
-**Run on host:**
+**Run:**
 
 ```bash
-ceedling test:test_crc16
-# or
-gcc -DUNIT_TEST -Isrc -Iunity/src \
-    unity/src/unity.c src/crc16.c test/test_crc16.c -o test_crc16
-./test_crc16
+python3 skills/testing/test_runner.py test/ src/
+```
+
+**Output:**
+
+```
+============================================================
+TEST: test_crc8.c
+  src: src/crc8.c
+  pass  empty data should return 0x00
+  pass  crc8({0x31,0x32,0x33}) should be 0xC0
+  pass  crc8(0x00) should be 0x00
+
+--- 3 tests: 3 passed, 0 failed ---
+
+  RESULT: PASS
+
+============================================================
+SUMMARY: 1 test file(s): 1 passed, 0 failed
 ```
 
 ---
 
-## Example 2: Mocking a SPI HAL with CMock
+## Example 2: UART driver with hardware stub
 
-**src/hal/hal_spi.h** (the interface to mock):
+The `uart_send_byte` function writes to a hardware register on target, but the
+stub records bytes in a buffer during host tests.
+
+**src/uart.c** (shared between target and test build):
 
 ```c
-typedef enum { HAL_OK = 0, HAL_ERROR } hal_status_t;
+#include "uart.h"
 
-hal_status_t hal_spi_transfer(uint8_t *tx_buf, uint8_t *rx_buf, size_t len);
+#ifdef UNIT_TEST
+/* Test stub — no hardware access */
+static uint8_t _tx_buf[256];
+static size_t  _tx_len;
+
+void     uart_stub_reset(void)       { _tx_len = 0; }
+size_t   uart_stub_sent_count(void)  { return _tx_len; }
+uint8_t  uart_stub_sent_byte(size_t i) { return _tx_buf[i]; }
+
+void uart_send_byte(uint8_t b) { _tx_buf[_tx_len++] = b; }
+
+#else
+/* Production — write to USART1 */
+void uart_send_byte(uint8_t b) {
+    while (!(USART1->SR & USART_SR_TXE)) {}
+    USART1->DR = b;
+}
+#endif
 ```
 
-**Generate the mock:**
+**test/test_uart.c:**
 
-> CMock is available at https://github.com/ThrowTheSwitch/CMock.
-> Add it to your project as a Git submodule under `tools/cmock/`, then adjust
-> the path below accordingly.
+```c
+#include "test_utils.h"
+#include "../src/uart.h"
+
+static void test_uart_send_byte_stores_value(void) {
+    uart_stub_reset();
+    uart_send_byte(0x42);
+    TEST_ASSERT_EQ(1,    uart_stub_sent_count(), "one byte should be recorded");
+    TEST_ASSERT_EQ(0x42, uart_stub_sent_byte(0), "byte should be 0x42");
+}
+
+int main(void) {
+    RUN_TESTS(
+        test_uart_send_byte_stores_value,
+    );
+}
+```
+
+**Run with UNIT_TEST define:**
 
 ```bash
-# If CMock is a submodule at tools/cmock/
-ruby tools/cmock/lib/cmock.rb --mock_path=build/mocks src/hal/hal_spi.h
-# Produces build/mocks/mock_hal_spi.c and mock_hal_spi.h
-```
-
-When using Ceedling, mock generation is automatic — just `#include "mock_hal_spi.h"`
-and Ceedling discovers and builds the mock for you.
-
-**test/test_bme280_driver.c:**
-
-```c
-#include "unity.h"
-#include "mock_hal_spi.h"    /* CMock-generated */
-#include "bme280_driver.h"
-
-void setUp(void)    { }
-void tearDown(void) { }
-
-void test_bme280_read_chip_id_returns_0x60(void) {
-    /* Arrange: first byte is dummy (SPI read command), second is chip ID */
-    uint8_t fake_rx[] = {0x00, 0x60};
-    hal_spi_transfer_ExpectAnyArgsAndReturn(HAL_OK);
-    hal_spi_transfer_ReturnArrayThruPointer_rx_buf(fake_rx, 2);
-
-    /* Act */
-    uint8_t chip_id = bme280_read_chip_id();
-
-    /* Assert */
-    TEST_ASSERT_EQUAL_HEX8(0x60, chip_id);
-}
-
-void test_bme280_read_chip_id_returns_error_on_spi_failure(void) {
-    hal_spi_transfer_ExpectAnyArgsAndReturn(HAL_ERROR);
-    uint8_t chip_id = bme280_read_chip_id();
-    TEST_ASSERT_EQUAL_HEX8(0x00, chip_id); /* error sentinel */
-}
+CFLAGS="-DUNIT_TEST" python3 skills/testing/test_runner.py test/ src/
 ```
 
 ---
 
-## Example 3: State machine unit test (no hardware dependency)
+## Example 3: State machine (self-contained, no src/ match needed)
 
-**Scenario:** Test the UART protocol parser state machine in isolation.
+When the module under test is small enough to inline in the test file, no
+`src/<module>.c` is needed — `test_runner.py` will compile the test file alone.
 
 ```c
-#include "unity.h"
-#include "protocol_parser.h"
+/* test/test_parser.c — self-contained */
+#include "test_utils.h"
 
-static parser_ctx_t ctx;
+/* ---- minimal inline module ---- */
+typedef enum { IDLE, IN_FRAME, DONE } parser_state_t;
+static parser_state_t _state = IDLE;
 
-void setUp(void)    { parser_init(&ctx); }
-void tearDown(void) { }
+static void parser_reset(void) { _state = IDLE; }
 
-void test_parser_accepts_valid_frame(void) {
-    /* SOF=0xAA, LEN=0x02, DATA=0x01 0x02, CRC=0x03C1 */
-    uint8_t frame[] = {0xAA, 0x02, 0x01, 0x02, 0x03, 0xC1};
-    for (size_t i = 0; i < sizeof(frame); i++) {
-        parser_feed(&ctx, frame[i]);
+static parser_state_t parser_feed(uint8_t b) {
+    switch (_state) {
+    case IDLE:     if (b == 0xAA) _state = IN_FRAME; break;
+    case IN_FRAME: if (b == 0x55) _state = DONE;      break;
+    default: break;
     }
-    TEST_ASSERT_EQUAL(PARSER_STATE_COMPLETE, ctx.state);
-    TEST_ASSERT_EQUAL_UINT8(0x01, ctx.payload[0]);
-    TEST_ASSERT_EQUAL_UINT8(0x02, ctx.payload[1]);
+    return _state;
+}
+/* ---- tests ---- */
+
+static void test_parser_idle_on_reset(void) {
+    parser_reset();
+    TEST_ASSERT(_state == IDLE, "state should be IDLE after reset");
 }
 
-void test_parser_rejects_frame_with_bad_crc(void) {
-    uint8_t frame[] = {0xAA, 0x02, 0x01, 0x02, 0xFF, 0xFF}; /* bad CRC */
-    for (size_t i = 0; i < sizeof(frame); i++) {
-        parser_feed(&ctx, frame[i]);
-    }
-    TEST_ASSERT_EQUAL(PARSER_STATE_ERROR, ctx.state);
+static void test_parser_transitions_to_done(void) {
+    parser_reset();
+    parser_feed(0xAA);
+    parser_feed(0x55);
+    TEST_ASSERT(_state == DONE, "should reach DONE after 0xAA 0x55");
 }
 
-void test_parser_resets_on_unexpected_sof(void) {
-    /* Mid-frame, inject a new SOF to simulate a framing error */
-    parser_feed(&ctx, 0xAA);  /* partial frame */
-    parser_feed(&ctx, 0x01);
-    parser_feed(&ctx, 0xAA);  /* new SOF mid-frame */
-    TEST_ASSERT_EQUAL(PARSER_STATE_SOF, ctx.state);
+int main(void) {
+    RUN_TESTS(
+        test_parser_idle_on_reset,
+        test_parser_transitions_to_done,
+    );
 }
 ```
 
----
-
-## Example 4: Static analysis with cppcheck in CI
-
-**Makefile target:**
-
-```makefile
-analyze:
-	cppcheck --enable=all --inconclusive --std=c11 \
-	         --error-exitcode=1 \
-	         --suppress=missingIncludeSystem \
-	         -I src/ src/ 2>&1 | tee reports/cppcheck.txt
-```
-
-**CMake integration:**
-
-```cmake
-find_program(CPPCHECK cppcheck)
-if(CPPCHECK)
-    add_custom_target(static_analysis
-        COMMAND ${CPPCHECK}
-            --enable=all --inconclusive --std=c11
-            --error-exitcode=1
-            --suppress=missingIncludeSystem
-            -I ${CMAKE_SOURCE_DIR}/src
-            ${CMAKE_SOURCE_DIR}/src
-        COMMENT "Running cppcheck static analysis"
-    )
-endif()
-```
-
-Run before every PR merge:
+**Run (no matching src/ file required):**
 
 ```bash
-cmake --build build --target static_analysis
+python3 skills/testing/test_runner.py test/ src/
 ```

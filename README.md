@@ -41,11 +41,12 @@ skills/
   fault-decode/         – Decode Cortex-M fault registers → diagnosis + fix hint
                           Tool: decode_cortexm_fault.py
   peripheral-init/      – Generate peripheral init code from MCU spec
-  architecture/         – Produce component map + memory sketch + ADR
-  code-review/          – Execute ordered checklist → formatted findings list
+  code-review/          – Style gate (clang-format + shellcheck + diff-size),
+                          then embedded correctness checklist
+                          Tool: run_style_checks.sh
   debugging/            – Run diagnostic procedure → root-cause + minimum fix
-  git/                  – Execute git command sequences for firmware tasks
-  testing/              – Generate Unity test stub from header → run on host
+  testing/              – Write and run minimal C unit tests with gcc only
+                          Tool: test_runner.py  |  Header: test_utils.h
 
 references/     – Attribution for external sources
 templates/      – Templates for adding new skills

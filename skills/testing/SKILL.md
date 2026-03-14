@@ -1,166 +1,158 @@
-# Skill: Embedded Firmware Test Generator
+# Skill: C Unit Testing (Minimal)
 
 ## Purpose
 
-Generate a Unity test file from a C header, run the tests on the host (no
-hardware required), and interpret failures — all without modifying production
-firmware code.
+Write and run unit tests for a C firmware module using only `gcc` and a
+single-header test utility — no build system, no framework install, no hardware
+required.
 
 ## When to use
 
 Use this skill when:
 
-- Writing unit tests for a new driver, state machine, or protocol parser
-- Mocking a hardware peripheral so tests run on a PC
-- Running static analysis to catch undefined behaviour before hardware testing
-- A test is flaky and needs diagnosis
+- Adding a new C module (driver, parser, state machine, utility) and want tests
+  before it goes to hardware
+- Reproducing a bug as a failing test before fixing it
+- Confirming a fix did not break other behaviour
 
 ## Inputs
 
-- A `.h` header file with the public function signatures to test
-- The RTOS or execution model (affects which types to mock)
-- Whether CMock mock generation is available (`ruby` + CMock submodule)
+- A C module: `src/<module>.c` + `src/<module>.h`
+- `gcc` available on the host (or set `CC=arm-none-eabi-gcc` for cross-compile)
+
+No other tools are required.  The test runner script writes `test_utils.h` into
+your `test/` directory automatically.
 
 ## Instructions
 
-### 1. Decouple hardware behind a HAL interface
+### 1. Create the test directory
 
-If the module under test calls hardware registers directly, extract a HAL
-struct before writing tests:
-
-```c
-/* hal_spi.h — abstract interface (no registers here) */
-typedef struct {
-    hal_status_t (*transfer)(const uint8_t *tx, uint8_t *rx, size_t len);
-} hal_spi_t;
-
-/* Module under test depends on the interface, not the register */
-int16_t sensor_read_temperature(const hal_spi_t *spi);
+```bash
+mkdir -p test/
 ```
 
-On the target, pass a real `hal_spi_t`.  In tests, pass a mock or fake.
-
-### 2. Generate the test file skeleton
-
-For a header `src/<module>.h`, create `test/test_<module>.c`:
+### 2. Write `test/test_<module>.c`
 
 ```c
-/* test/test_<module>.c — generated skeleton */
-#include "unity.h"
-#include "<module>.h"
-/* #include "mock_hal_<peripheral>.h"  — add if using CMock mocks */
+#include "test_utils.h"         /* written by test_runner.py on first run */
+#include "../src/<module>.h"    /* the module under test */
 
-void setUp(void)    { /* reset module state before each test */ }
-void tearDown(void) { /* clean up after each test */ }
-
-/* --- Test cases below --- */
-
-void test_<module>_<scenario>_<expected>(void) {
+/* One function per test case */
+static void test_<module>_<scenario>(void) {
     /* Arrange */
+    <set up inputs>
 
     /* Act */
+    <result> = <function>(<inputs>);
 
     /* Assert */
-    TEST_ASSERT_<MATCHER>(...);
+    TEST_ASSERT(<result> == <expected>, "<description of what should be true>");
 }
 
-/* Required by Unity standalone runner */
 int main(void) {
-    UNITY_BEGIN();
-    RUN_TEST(test_<module>_<scenario>_<expected>);
-    return UNITY_END();
+    RUN_TESTS(
+        test_<module>_<scenario>,
+        /* add more test functions here */
+    );
 }
 ```
 
-Name format: `test_<module>_<scenario>_<expected_outcome>`
+**Naming rule**: `test_<module>_<scenario>` — be specific:
 
 ```c
 /* Good */
-void test_crc16_known_vector_matches_spec(void) { ... }
-void test_uart_rx_overrun_flag_returns_error(void) { ... }
+static void test_crc8_known_vector_returns_0xC0(void) { ... }
+static void test_ring_buffer_full_returns_error(void) { ... }
 
-/* Bad — too vague */
-void test_uart(void) { ... }
-void test1(void)     { ... }
+/* Bad — too vague to diagnose failures */
+static void test_crc(void) { ... }
+static void test1(void)    { ... }
 ```
 
-### 3. Generate mocks with CMock (when available)
+**Available assertions in `test_utils.h`**:
 
-```bash
-# Generate mock from HAL header
-ruby tools/cmock/lib/cmock.rb --mock_path=build/mocks src/hal/hal_spi.h
-
-# Use in the test file
-#include "mock_hal_spi.h"
-
-void test_sensor_read_calls_spi_transfer(void) {
-    uint8_t fake_rx[] = {0x01, 0x90};   /* 40.0 °C in 0.1 °C units */
-    hal_spi_transfer_ExpectAnyArgsAndReturn(HAL_OK);
-    hal_spi_transfer_ReturnArrayThruPointer_rx(fake_rx, 2);
-
-    TEST_ASSERT_EQUAL_INT16(400, sensor_read_temperature(&mock_spi));
-}
-```
-
-### 4. Compile and run on the host
-
-```bash
-# CMake + host toolchain (no ARM target needed)
-cmake -DCMAKE_TOOLCHAIN_FILE=cmake/host-gcc.cmake -B build/test -S .
-cmake --build build/test --target run_tests
-
-# Or with Ceedling
-ceedling test:all
-```
-
-Minimal `cmake/host-gcc.cmake`:
-
-```cmake
-set(CMAKE_SYSTEM_NAME Generic)
-set(CMAKE_C_COMPILER gcc)
-set(CMAKE_C_FLAGS "-DUNIT_TEST -DUNITY_INCLUDE_CONFIG_H")
-```
-
-Passing output:
-
-```
-test/test_crc16.c:25:test_crc16_known_vector_returns_0x6131:PASS
-test/test_crc16.c:31:test_crc16_empty_buffer_returns_0xFFFF:PASS
------------------------
-2 Tests 0 Failures 0 Ignored
-OK
-```
-
-### 5. Run static analysis
-
-```bash
-cppcheck --enable=all --inconclusive --std=c11 \
-         --suppress=missingIncludeSystem \
-         -I src/ src/ 2>&1 | tee cppcheck_report.txt
-```
-
-Enable compiler warnings in the build system:
-
-```cmake
-target_compile_options(firmware PRIVATE
-    -Wall -Wextra -Wshadow -Wundef -fstack-usage)
-```
-
-For MISRA-C compliance: use PC-lint Plus or Polyspace in CI.
-
-### 6. Diagnose a flaky test
-
-A test that sometimes passes / sometimes fails must be fixed before merging.
-
-Common embedded causes and fixes:
-
-| Cause | Fix |
+| Macro | Use |
 |-------|-----|
-| Uninitialized static state between tests | Call `memset` on module state in `setUp` |
-| Real-time dependency in host test | Mock `HAL_GetTick` / `clock_gettime` |
-| Missing `setUp` / `tearDown` | Add reset logic for every stateful module |
+| `TEST_ASSERT(cond, msg)` | General boolean condition |
+| `TEST_ASSERT_EQ(expected, actual, msg)` | Integer equality (`==`) |
+| `TEST_ASSERT_STR(expected, actual, msg)` | String equality (`strcmp`) |
+| `TEST_ASSERT_NULL(ptr, msg)` | Pointer is NULL |
+| `TEST_ASSERT_NOT_NULL(ptr, msg)` | Pointer is not NULL |
 
-Never `#if 0` or skip a flaky test — fix or delete it.
+### 3. Run the tests
+
+```bash
+python3 skills/testing/test_runner.py test/ src/
+```
+
+The runner:
+
+1. Writes `test/test_utils.h` (single-header utility, overwritten each run)
+2. For each `test/test_<module>.c`, locates `src/<module>.c` and compiles both
+   with `gcc -std=c11 -Wall -Wextra`
+3. Runs the resulting binary and prints PASS / FAIL per assertion
+4. Prints a summary and exits 0 (all passed) or 1 (failures)
+
+**Passing output:**
+
+```
+============================================================
+TEST: test_crc8.c
+  src: src/crc8.c
+  pass  empty data should return 0x00
+  pass  crc8(0x00) should be 0x00
+  pass  crc8({0x31,0x32,0x33}) should be 0xC0
+
+--- 3 tests: 3 passed, 0 failed ---
+
+  RESULT: PASS
+
+============================================================
+SUMMARY: 1 test file(s): 1 passed, 0 failed
+```
+
+### 4. Handle hardware dependencies
+
+If the module under test calls hardware registers directly, stub those calls
+out using a compile-time guard:
+
+```c
+/* src/uart.c */
+#ifdef UNIT_TEST
+/* Stub: no real hardware */
+static uint8_t _fake_txbuf[256];
+static size_t  _fake_txlen;
+
+void uart_send_byte(uint8_t b) { _fake_txbuf[_fake_txlen++] = b; }
+#else
+void uart_send_byte(uint8_t b) {
+    while (!(USART1->SR & USART_SR_TXE)) {}
+    USART1->DR = b;
+}
+#endif
+```
+
+Compile the test with `-DUNIT_TEST`:
+
+```bash
+CC="gcc" CFLAGS="-DUNIT_TEST" python3 skills/testing/test_runner.py test/ src/
+# (test_runner.py passes $CFLAGS automatically when set)
+```
+
+### 5. Commit a failing test before a bug fix
+
+```bash
+# 1. Write a test that reproduces the bug — it must FAIL on current code
+python3 skills/testing/test_runner.py test/ src/
+# → FAIL: test_ring_buffer_full_returns_error
+
+# 2. Fix the bug in src/ring_buffer.c
+# 3. Re-run — test must now PASS
+python3 skills/testing/test_runner.py test/ src/
+# → PASS
+
+# 4. Commit both the test and the fix together
+```
 
 ## Examples
 
@@ -168,8 +160,5 @@ See [examples.md](examples.md).
 
 ## References
 
-- [Unity Test Framework](https://github.com/ThrowTheSwitch/Unity)
-- [CMock Mock Generator](https://github.com/ThrowTheSwitch/CMock)
-- [Ceedling Build System](https://github.com/ThrowTheSwitch/Ceedling)
-- [cppcheck Static Analyser](https://cppcheck.sourceforge.io/)
+- [`gcc` man page](https://man7.org/linux/man-pages/man1/gcc.1.html)
 - [Test Driven Development for Embedded C — James Grenning](https://pragprog.com/titles/jgade/test-driven-development-for-embedded-c/)
