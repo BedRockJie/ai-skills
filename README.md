@@ -1,6 +1,8 @@
-# AI Skills Library
+# AI Skills Library — Embedded Systems Edition
 
-A curated collection of reusable AI skills for CLI agents and coding assistants.
+A curated collection of reusable AI skills for embedded firmware development,
+targeting CLI agents and coding assistants working with MCUs and SoCs
+(ARM Cortex-M/A/R, x86, AMD/Intel embedded, RISC-V).
 
 This repository contains modular **skills** that can be used by AI agents such as:
 
@@ -21,12 +23,13 @@ Skills should be:
 
 ```
 skills/
-  git/          – Git workflow best practices
+  git/                  – Git workflow for embedded firmware
+                          (branching, binary artifacts, hardware-rev tags, submodules)
   conventional-commits/ – Conventional Commits guidance and validation script
-  debugging/    – Systematic debugging approaches
-  architecture/ – Software design principles
-  code-review/  – Code review guidelines
-  testing/      – Testing strategies and patterns
+  debugging/            – Embedded debugging: JTAG/SWD, GDB, HardFault, UART log
+  architecture/         – Embedded firmware architecture: layered design, memory map, RTOS
+  code-review/          – Embedded code review: volatile, ISR safety, MISRA-C, memory
+  testing/              – Embedded testing: Unity/CMock, host-side, static analysis
 
 references/     – Attribution for external sources
 templates/      – Templates for adding new skills

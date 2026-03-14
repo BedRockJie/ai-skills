@@ -1,68 +1,139 @@
-# Debugging Skill – Examples
+# Embedded Debugging – Examples
 
-## Example 1: Diagnosing a Python KeyError
+## Example 1: Diagnosing a Cortex-M HardFault (stack overflow)
 
-**Symptom:** `KeyError: 'user_id'` in production logs.
+**Symptom:** MCU hard-resets repeatedly ~200 ms after boot; no UART output after
+initialisation.
 
 **Steps:**
 
-1. Reproduce locally with the same payload that triggers the error.
-2. Add a debug print before the failing line:
+1. Add a minimal hard-fault handler that saves context before the reset:
 
-```python
-print(f"[DEBUG] data keys: {list(data.keys())}")
-user_id = data["user_id"]
+```c
+void HardFault_Handler(void) {
+    volatile uint32_t cfsr  = SCB->CFSR;
+    volatile uint32_t hfsr  = SCB->HFSR;
+    volatile uint32_t *sp   = (volatile uint32_t *)__get_MSP();
+    volatile uint32_t stacked_pc = sp[6];
+    (void)cfsr; (void)hfsr; (void)stacked_pc;
+    __BKPT(0);  /* Halt here when GDB is attached */
+    while (1) {}
+}
 ```
 
-3. Discover that the key is `"userId"` (camelCase) in the incoming JSON.
-4. Fix: normalise the key on ingestion.
+2. Attach GDB, reproduce the fault, halt at the breakpoint:
 
-```python
-user_id = data.get("user_id") or data.get("userId")
-if user_id is None:
-    raise ValueError("Missing user identifier in payload")
+```gdb
+(gdb) p/x cfsr
+$1 = 0x00000200     /* CFSR bit 9 = STKERR: stacking error */
+(gdb) p/x stacked_pc
+$2 = 0x08003f2c
+(gdb) info line *0x08003f2c
+Line 47 of "src/sensor_task.c"
 ```
 
-5. Remove the debug print and add a regression test.
+3. `STKERR` + stacked PC in `sensor_task.c:47` points to a stack overflow in
+   the sensor task. Check task stack size:
+
+```c
+/* Before fix: too small for the FFT + local arrays */
+#define SENSOR_TASK_STACK  128   /* words — WAY too small */
+
+/* After fix */
+#define SENSOR_TASK_STACK  512   /* words — verified with uxTaskGetStackHighWaterMark */
+```
+
+4. Enable FreeRTOS stack-overflow checking during development:
+
+```c
+/* FreeRTOSConfig.h */
+#define configCHECK_FOR_STACK_OVERFLOW  2
+```
 
 ---
 
-## Example 2: Flaky test investigation
+## Example 2: SPI peripheral produces no clock output
 
-**Symptom:** `test_send_email` fails ~30% of the time.
+**Symptom:** SPI2 MOSI stays low, no CLK pulses visible on oscilloscope.
 
 **Steps:**
 
-1. Run the test 10 times in a row: `for i in {1..10}; do pytest tests/test_email.py; done`
-2. Notice it fails when the clock rolls over a minute boundary.
-3. Hypothesis: the test builds an expected timestamp string using `datetime.now()`,
-   but the code under test also calls `datetime.now()` slightly later.
-4. Fix: mock `datetime.now` to return a fixed value in both the test setup and
-   the code path.
+1. Check that the peripheral clock is enabled:
 
-```python
-from unittest.mock import patch
-import datetime
+```gdb
+(gdb) p/x RCC->APB1ENR
+$1 = 0x00000000   /* SPI2EN bit (14) is 0 — clock NOT enabled! */
+```
 
-FIXED_TIME = datetime.datetime(2026, 1, 1, 12, 0, 0)
+2. The root cause: `spi2_init()` accesses SPI2->CR1 before enabling the bus clock.
+   Fix — add clock enable as the first line:
 
-@patch("myapp.email.datetime")
-def test_send_email(mock_dt):
-    mock_dt.now.return_value = FIXED_TIME
-    ...
+```c
+void spi2_init(void) {
+    RCC->APB1ENR |= RCC_APB1ENR_SPI2EN;   /* Enable SPI2 clock first */
+    /* Small delay to let the clock propagate (see errata) */
+    (void)RCC->APB1ENR;
+
+    SPI2->CR1 = SPI_CR1_MSTR | SPI_CR1_BR_2 | SPI_CR1_SPE;
+}
+```
+
+3. Re-attach logic analyser — SCK, MOSI, CS now show correct transactions.
+
+---
+
+## Example 3: Intermittent I2C NACK — logic analyser catches it
+
+**Symptom:** I2C sensor read returns `HAL_ERROR` roughly 1 in 50 transactions.
+
+**Steps:**
+
+1. Attach logic analyser to SDA and SCL, decode I2C at 400 kHz.
+2. Capture ~100 transactions. Find the failing one:
+   - Address byte `0x4C` (write) — ACK ✓
+   - Register byte `0x00` — ACK ✓
+   - Repeated Start — *missing* — bus releases to idle instead
+3. Hypothesis: CS de-assertion (repeated start) is skipped when another task
+   pre-empts between the address write and the register read phases.
+4. Fix: wrap the two-phase transaction in a mutex to make it atomic from the
+   scheduler's perspective:
+
+```c
+xSemaphoreTake(i2c_mutex, portMAX_DELAY);
+HAL_I2C_Master_Transmit(&hi2c1, addr_write, &reg, 1, 10);
+HAL_I2C_Master_Receive(&hi2c1,  addr_read,  buf,  2, 10);
+xSemaphoreGive(i2c_mutex);
 ```
 
 ---
 
-## Example 3: Performance regression via binary search
+## Example 4: Using `git bisect` to find a timing regression
 
-**Symptom:** API response time doubled after a deploy.
+**Symptom:** CAN telemetry frame rate drops from 100 Hz to ~60 Hz after a recent
+merge. The regression was not caught in review.
 
 **Steps:**
 
-1. `git bisect start`
-2. Mark current bad commit: `git bisect bad`
-3. Mark last known good release: `git bisect good v1.4.0`
-4. For each commit Git checks out, run the benchmark and mark good/bad.
-5. Git identifies the commit that introduced an N+1 query in the ORM layer.
-6. Fix by adding `.select_related("author")` to the queryset.
+```bash
+git bisect start
+git bisect bad                     # current HEAD – 60 Hz (bad)
+git bisect good v3.1.0             # last release – 100 Hz (good)
+
+# Git checks out the midpoint; flash and measure frame rate
+git bisect bad                     # still 60 Hz
+
+# ... repeat ~8 times ...
+
+# Git reports:
+# 7d3a1c4 is the first bad commit
+# Author: dev@example.com
+# Date:   Mon Mar 10 09:14:22 2026
+#     feat(uart): increase UART TX DMA buffer to 4 KB
+
+git bisect reset
+```
+
+**Root cause:** The larger UART DMA buffer raised the DMA transfer completion
+interrupt priority above the CAN Tx interrupt, starving it. Fix: lower the
+UART DMA IRQ priority below the CAN Tx IRQ in the NVIC configuration.
+
