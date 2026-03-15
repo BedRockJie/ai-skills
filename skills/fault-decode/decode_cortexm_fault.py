@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Decode Cortex-M SCB fault registers and print a human-readable diagnosis.
+"""Decode Cortex-M SCB fault registers.
 
 Usage examples:
   # Decode CFSR only
@@ -15,11 +15,6 @@ Usage examples:
   #   (gdb) p/x SCB->MMFAR   -> use for --mmfar
   #   (gdb) p/x SCB->BFAR    -> use for --bfar
   #
-  # Read via J-Link Commander:
-  #   mem 0xE000ED28 4   (CFSR)
-  #   mem 0xE000ED2C 4   (HFSR)
-  #   mem 0xE000ED34 4   (MMFAR)
-  #   mem 0xE000ED38 4   (BFAR)
 """
 
 from __future__ import annotations
@@ -158,42 +153,37 @@ def _parse_hex(value: str) -> int:
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Decode Cortex-M SCB fault registers and print a diagnosis.",
+        description="Decode Cortex-M SCB fault registers.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
-            "GDB commands to capture register values before reset:\n"
+            "Read values before reset:\n"
             "  (gdb) p/x SCB->CFSR\n"
             "  (gdb) p/x SCB->HFSR\n"
             "  (gdb) p/x SCB->MMFAR\n"
             "  (gdb) p/x SCB->BFAR\n"
             "  (gdb) p/x ((uint32_t *)__get_MSP())[6]  <- stacked PC\n"
             "\n"
-            "OpenOCD commands to read without halting (unsafe but quick):\n"
-            "  mdw 0xE000ED28   (CFSR)\n"
-            "  mdw 0xE000ED2C   (HFSR)\n"
-            "  mdw 0xE000ED34   (MMFAR)\n"
-            "  mdw 0xE000ED38   (BFAR)\n"
         ),
     )
     parser.add_argument(
         "--cfsr", type=_parse_hex, required=True,
         metavar="0xVALUE",
-        help="SCB->CFSR value (required). Captures MemManage, BusFault, and UsageFault bits.",
+        help="SCB->CFSR value.",
     )
     parser.add_argument(
         "--hfsr", type=_parse_hex, default=0,
         metavar="0xVALUE",
-        help="SCB->HFSR value (optional). Indicates if a configurable fault was escalated.",
+        help="SCB->HFSR value.",
     )
     parser.add_argument(
         "--mmfar", type=_parse_hex, default=None,
         metavar="0xVALUE",
-        help="SCB->MMFAR value (optional). Valid only when CFSR.MMARVALID is set.",
+        help="SCB->MMFAR value.",
     )
     parser.add_argument(
         "--bfar", type=_parse_hex, default=None,
         metavar="0xVALUE",
-        help="SCB->BFAR value (optional). Valid only when CFSR.BFARVALID is set.",
+        help="SCB->BFAR value.",
     )
     return parser
 
@@ -211,7 +201,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sep = "=" * 64
     print(f"\n{sep}")
-    print("  Cortex-M Fault Register Decoder")
+    print("  Cortex-M Fault Decode")
     print(sep)
     print(f"  CFSR  : 0x{args.cfsr:08X}")
     print(f"  HFSR  : 0x{args.hfsr:08X}")
@@ -225,8 +215,8 @@ def main(argv: list[str] | None = None) -> int:
     hfsr_hits = _decode_hfsr(args.hfsr)
 
     if not cfsr_hits and not hfsr_hits:
-        print("  No fault bits are set — all registers read as zero.")
-        print("  Tip: capture registers BEFORE the system resets or clears them.\n")
+        print("  No fault bits set.")
+        print("  Capture registers before reset.\n")
         print(sep + "\n")
         return 0
 
@@ -264,14 +254,14 @@ def main(argv: list[str] | None = None) -> int:
                 print("  MMARVALID is set but --mmfar was not provided; re-run with --mmfar.")
 
     print(f"\n{sep}")
-    print("  Next steps:")
+    print("  Next:")
     print("  1. In GDB, read the stacked PC at fault time:")
     print("       (gdb) p/x ((uint32_t *)__get_MSP())[6]")
-    print("  2. Resolve the faulting source line:")
+    print("  2. Resolve the source line:")
     print("       arm-none-eabi-addr2line -e build/firmware.elf 0x<stacked_pc>")
-    print("  3. Apply the fix hint(s) shown above to that source line.")
-    print("  4. Clear fault registers after analysis:")
-    print("       SCB->CFSR = SCB->CFSR;   // W1C — write 1 to clear")
+    print("  3. Apply the likely fix.")
+    print("  4. Clear fault registers after analysis.")
+    print("       SCB->CFSR = SCB->CFSR;")
     print(f"{sep}\n")
 
     return 0

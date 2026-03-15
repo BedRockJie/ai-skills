@@ -1,158 +1,118 @@
-# Embedded Code Review – Examples
+# C/C++ Code Review Gate - Examples
 
-## Example 1: Missing `volatile` on a status register
+## Example 1: Unbounded string copy in user-space code
 
-**Patch under review (custom register struct without `volatile`):**
+**Patch under review:**
+
+```c
+void process_name(const char *name) {
+    char buf[32];
+    strcpy(buf, name);
+    consume_name(buf);
+}
+```
+
+**Deterministic finding:**
+
+```
+blocker: [src/user.c:3] unbounded or legacy string API - use a bounded alternative
+  Expected: bounded copy with explicit termination or length validation
+  Actual:   strcpy(buf, name)
+```
+
+**Residual review question after the fix:**
+
+```
+question: [src/user.c:2] What is the expected maximum input length here?
+  Expected: interface contract or validation that matches caller behavior
+  Actual:   local truncation risk remains unclear even after replacing strcpy
+```
+
+---
+
+## Example 2: Process execution added in a helper path
+
+**Patch under review:**
+
+```c
+int reload_helper(const char *unit) {
+    char command[256];
+    snprintf(command, sizeof(command), "systemctl reload %s", unit);
+    return system(command);
+}
+```
+
+**Deterministic finding:**
+
+```
+warning: [src/reload.c:4] process execution requires strict input validation and error handling
+  Expected: validated input and a safer spawn/exec strategy where possible
+  Actual:   system(command)
+```
+
+**Residual review focus:**
+
+```
+blocker: [src/reload.c:2] user-controlled input may reach a shell command
+  Expected: shell-free execution path or strict allowlist validation
+  Actual:   unit is interpolated into a command string
+```
+
+---
+
+## Example 3: Public header and ABI risk
+
+**Patch under review:**
 
 ```c
 typedef struct {
-    uint32_t SR;   /* Status register – note: NOT volatile */
-    uint32_t DR;
-    uint32_t BRR;
-} USART_TypeDef;
-
-static USART_TypeDef * const USART1 = (USART_TypeDef *)0x40013000;
-
-static void wait_for_tx_complete(void) {
-    while (!(USART1->SR & (1u << 6))) {}   /* TC bit */
-}
+    uint32_t flags;
+    uint16_t version;
+    uint16_t reserved;
+    uint64_t trace_id;
+} request_header_t;
 ```
 
-**Review comment:**
+**Risk summary output:**
 
 ```
-blocker: USART_TypeDef::SR is not declared volatile. At -O1 or higher the
-compiler is free to read SR once, cache it in a register, and produce an
-infinite loop (or remove the loop entirely). Hardware status registers change
-independently of the CPU, so they MUST be volatile:
-
-  typedef struct {
-      volatile uint32_t SR;
-      volatile uint32_t DR;
-      volatile uint32_t BRR;
-  } USART_TypeDef;
-
-This is how CMSIS-Device vendor headers define peripheral structs — follow
-that convention so the compiler cannot optimise away hardware reads/writes.
+RISK SUMMARY:
+- high: public header or API surface changed: include/request.h
+- high: symbol visibility or ABI-related code changed
 ```
 
-**Corrected code:**
+**Residual review focus:**
 
-```c
-typedef struct {
-    volatile uint32_t SR;
-    volatile uint32_t DR;
-    volatile uint32_t BRR;
-} USART_TypeDef;
-
-static USART_TypeDef * const USART1 = (USART_TypeDef *)0x40013000;
-
-static void wait_for_tx_complete(void) {
-    uint32_t timeout = 10000;
-    while (!(USART1->SR & (1u << 6)) && timeout--) {}   /* TC bit with timeout */
-}
+```
+question: [include/request.h:1] Is this struct part of a stable on-disk or on-wire format?
+  Expected: explicit compatibility story, packing/alignment review, and versioning plan
+  Actual:   layout changed but compatibility intent is not stated
 ```
 
 ---
 
-## Example 2: Blocking RTOS call inside an ISR
+## Example 4: Concurrency change with clean deterministic gates
 
 **Patch under review:**
 
-```c
-void USART1_IRQHandler(void) {
-    char ch = USART1->DR;
-    xQueueSend(rx_queue, &ch, portMAX_DELAY); /* Wait forever */
+```c++
+void Worker::stop() {
+    stopping_.store(true, std::memory_order_relaxed);
+    cv_.notify_all();
+    worker_.join();
 }
 ```
 
-**Review comment:**
+**Deterministic outcome:**
 
 ```
-blocker: `xQueueSend` is not ISR-safe and must never be called with
-portMAX_DELAY from an interrupt context — this will corrupt the RTOS scheduler.
-Use `xQueueSendFromISR` with a BaseType_t woken variable and request a context
-switch if needed.
+warning: [src/worker.cpp:2] concurrency primitive changed - verify ordering, lifetime, and shutdown behavior
 ```
 
-**Corrected code:**
-
-```c
-void USART1_IRQHandler(void) {
-    char ch = (char)USART1->DR;
-    BaseType_t higher_priority_task_woken = pdFALSE;
-    xQueueSendFromISR(rx_queue, &ch, &higher_priority_task_woken);
-    portYIELD_FROM_ISR(higher_priority_task_woken);
-}
-```
-
----
-
-## Example 3: Missing peripheral clock enable
-
-**Patch under review:**
-
-```c
-void spi2_init(void) {
-    SPI2->CR1 = SPI_CR1_MSTR | SPI_CR1_SPE;
-    SPI2->CR2 = SPI_CR2_DS_7; /* 8-bit frames */
-}
-```
-
-**Review comment:**
+**Residual review question:**
 
 ```
-blocker: SPI2 peripheral clock is not enabled before accessing SPI2->CR1.
-On STM32, reading or writing a register on a clock-gated peripheral returns
-undefined data and may bus-fault on some silicon revisions.
-Add `__HAL_RCC_SPI2_CLK_ENABLE()` (or the bare-metal equivalent
-`RCC->APB1ENR |= RCC_APB1ENR_SPI2EN`) as the first line of spi2_init().
-```
-
----
-
-## Example 4: Unbounded buffer copy
-
-**Patch under review:**
-
-```c
-void process_command(const char *cmd) {
-    char local_buf[32];
-    strcpy(local_buf, cmd);   /* cmd length unchecked */
-    parse(local_buf);
-}
-```
-
-**Review comment:**
-
-```
-blocker: `strcpy` does not check the source length. If `cmd` exceeds 31 bytes,
-this overwrites the stack frame, corrupting the return address — a classic
-stack-smash vulnerability on an MCU with no MMU protection.
-Replace with a bounded copy:
-
-  strncpy(local_buf, cmd, sizeof(local_buf) - 1);
-  local_buf[sizeof(local_buf) - 1] = '\0';
-```
-
----
-
-## Example 5: Constructive suggestion on DMA buffer placement
-
-**Patch under review:**
-
-```c
-/* Placed in default SRAM1 */
-static uint8_t adc_dma_buf[256];
-```
-
-**Review comment (STM32H7 context):**
-
-```
-question: On STM32H7, DTCM (0x20000000) is not accessible to BDMA/DMA1/DMA2
-without going through the AXI interconnect. Is adc_dma_buf intended for use
-with DMA1? If so, consider annotating it with a linker section that places it
-in AXI SRAM (D2, 0x30000000) to ensure DMA accessibility:
-
-  __attribute__((section(".dma_buf"))) static uint8_t adc_dma_buf[256];
+question: [src/worker.cpp:1] Can stop() race with a second caller or with a not-yet-started thread?
+  Expected: shutdown contract is documented and join() is safe in all call paths
+  Actual:   lifetime and call-order assumptions are not obvious from the diff
 ```

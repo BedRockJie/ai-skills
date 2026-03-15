@@ -1,191 +1,118 @@
-# Skill: Embedded C Code Review
+# Skill: C/C++ Code Review Gate
 
 ## Purpose
 
-Gate a firmware pull request through two sequential phases: an automated style
-and size check (binary pass/fail, no judgment needed), then a targeted manual
-review of embedded-specific correctness issues in the changed lines only.
+Run deterministic review checks before AI review. Use this for C/C++ code in
+Linux user-space, libraries, services, tools, and support code.
 
 ## When to use
 
 Use this skill when:
 
-- Reviewing a pull request or patch for MCU / SoC firmware (C / C++)
-- Self-reviewing before requesting a peer review
-- Enforcing a repeatable, tool-backed review standard in a team
+- Reviewing a C or C++ change
+- Self-reviewing before peer review
+- Standardizing review around buildable, scriptable checks first
 
 ## Inputs
 
-- A git branch with commits ready to review
-- The base branch to diff against (default: `origin/main`)
+- A git branch ready for review
+- A base branch, default `origin/main`
+- A build command, usually passed with `BUILD_COMMAND`
 
 ## Instructions
 
-Work through the two phases **in order**.  Do not start Phase 2 until Phase 1
-produces `RESULT: PASS`.
+Run the stages in order. Do not use AI review until the gates pass.
 
----
+### 1. Classify the change
 
-### 1. Phase 1 — Automated style and size gate
+Mark the change type before review:
 
-#### 1a. Run the style-check script
+- `api/abi`
+- `memory`
+- `concurrency`
+- `security`
+- `build/tooling`
+
+Mark more than one type if needed.
+
+### 2. Run the style gate
 
 ```bash
 bash skills/code-review/run_style_checks.sh [BASE_REF]
-# Example: bash skills/code-review/run_style_checks.sh origin/main
 ```
 
-The script performs three independent checks and prints a single result line:
+This checks:
 
-```
-RESULT: PASS — all style checks passed. Proceed to code review step 2.
-```
-or
-```
-RESULT: FAIL — fix the issues above before proceeding to code review.
-```
+- `clang-format` on changed C/C++ files
+- `shellcheck` on changed shell files
+- diff size limits
 
-**Do not proceed to Phase 2 while the result is FAIL.**
+Rules:
 
-#### 1b. C / C++ style — clang-format
+- Missing required tools are a failure
+- Stop if the script prints `RESULT: FAIL`
+- Split large diffs before deeper review
 
-The script runs:
+### 3. Run the full gate
 
 ```bash
-clang-format --dry-run --Werror --style=file  <every changed .c/.h/.cpp file>
+bash skills/code-review/run_review_gate.sh [BASE_REF]
 ```
 
-- `--dry-run` makes no changes to files — it only checks.
-- `--Werror` turns any formatting difference into a non-zero exit code.
-- `--style=file` reads the project's `.clang-format`; falls back to LLVM style
-  if no config file exists.
+This runs:
 
-**Fix**: Apply the formatter in-place, then commit the result:
+1. Style checks
+2. Build validation
+3. Optional static analyzers
+4. Generic rule scanning
+5. Risk summary generation
 
-```bash
-clang-format -i --style=file src/driver/uart.c src/driver/uart.h
-git add -p     # review the diff before staging
-```
+Environment variables:
 
-#### 1c. Shell script style — shellcheck
+- `BUILD_COMMAND`
+- `CLANG_TIDY_COMMAND`
+- `CPPCHECK_COMMAND`
 
-The script runs `shellcheck` on every changed `.sh` file.  shellcheck reports
-problems by severity (`error` / `warning` / `info` / `style`).
+### 4. Read the risk summary
 
-**Fix**: Resolve each reported issue.  For intentional suppressions, add an
-inline directive:
+Use the risk summary to focus the next review pass.
 
-```bash
-# shellcheck disable=SC2034  # reason: variable used by caller via eval
-MY_VAR="value"
-```
+Look for:
 
-#### 1d. Diff-size gate — reviewability limit
+- API or ABI changes
+- ownership and cleanup changes
+- lock or thread behavior changes
+- error handling changes
+- subprocess or file-handling risks
+- build and packaging changes
 
-| Limit | Default | Override |
-|-------|---------|----------|
-| Lines changed per file | 200 | `MAX_LINES_PER_FILE=300 bash ...` |
-| Total lines in the diff | 400 | `MAX_DIFF_LINES=600 bash ...` |
+### 5. Do AI review last
 
-These limits exist because a reviewer (human or AI) cannot verify correctness
-of a 1 000-line diff: important bugs hide in the volume.
+Only ask AI to review what the scripts cannot prove.
 
-**Fix**: Split the branch into smaller, independently-mergeable commits:
+Focus on:
 
-```bash
-git rebase -i HEAD~<N>
-# Mark large commits as 'edit', split with 'git reset HEAD~1', re-stage piece by piece
-```
+- design fit
+- concurrency logic
+- error recovery
+- API clarity
+- test coverage versus risk
 
----
+Keep the AI input small:
 
-### 2. Phase 2 — Embedded correctness review of the diff
+- risk summary
+- relevant diff
+- any intentional warnings with rationale
 
-Open the diff:
+### 6. Approve or request changes
 
-```bash
-git diff origin/main HEAD -- '*.c' '*.h'
-```
+- Approve when the gates pass and no `blocker:` remains
+- Request changes when a gate fails or a `blocker:` remains
 
-Work through the checks below **in order**.  Emit one comment block per
-finding, using the format at the end of this section.
-
-#### 2. Check `volatile` on MMIO and ISR-shared variables
-
-Every memory-mapped register pointer and every variable shared between an ISR
-and task context must be `volatile`:
-
-```c
-/* Required */
-volatile uint32_t * const SR = (volatile uint32_t *)0x40013000;
-
-/* Flag — compiler caches the read at -O2 */
-uint32_t * const SR = (uint32_t *)0x40013000;
-```
-
-Emit: `blocker: [file:line] missing volatile — compiler may cache this value`
-
-#### 3. Check W1C register access
-
-Read-modify-write on a write-1-to-clear status register clears all pending
-flags, not just the intended one:
-
-```c
-/* Flag — clears all W1C bits */
-USART1->SR &= ~USART_SR_ORE;
-
-/* Correct — write only the target bit */
-USART1->SR = USART_SR_ORE;
-```
-
-Emit: `blocker: [file:line] RMW on W1C register — use assignment, not &=~`
-
-#### 4. Check ISR safety
-
-For each ISR (identified by NVIC registration or `__attribute__((interrupt))`):
-
-- Flag calls to: `printf`, `malloc`, `vTaskDelay`, `xQueueSend` (non-ISR),
-  `HAL_Delay`, `osDelay`, `osMutexAcquire`.
-- Flag RTOS operations that lack the `FromISR` suffix.
-- Flag local arrays ≥ 64 bytes (risk of ISR stack overflow).
-
-Emit: `blocker: [file:line] blocking call in ISR — use xQueueSendFromISR`
-
-#### 5. Check memory safety
-
-- Flag `strcpy`, `sprintf`, `gets` — require bounded equivalents.
-- Flag `malloc`/`free` in bare-metal or MISRA firmware unless approved.
-- Flag signed/unsigned mismatch in array-index arithmetic.
-
-Emit: `blocker: [file:line] unbounded copy — use strncpy(dst, src, sizeof(dst)-1)`
-
-#### 6. Check peripheral driver sequence
-
-- Clock-enable must appear **before** any peripheral register access.
-- Poll loops must have a timeout counter.
-
-```c
-/* Flag — no timeout */
-while (!(USART1->SR & USART_SR_TC)) {}
-
-/* Required */
-uint32_t t = 1000;
-while (!(USART1->SR & USART_SR_TC) && t--) {}
-if (t == 0) { return ERR_TIMEOUT; }
-```
-
-Emit: `blocker: [file:line] clock enable missing before peripheral register access`
-Emit: `blocker: [file:line] unbounded poll — add timeout counter`
-
-#### 7. Approve or request changes
-
-- **Approve** when Phase 1 passed and no `blocker:` findings remain in Phase 2.
-- **Request changes** when Phase 1 failed or any `blocker:` exists.
-
-**Comment format** (one block per finding):
+Comment format:
 
 ```
-<tag>: [file.c:line] <one-sentence description>
+<tag>: [file:line] <one-sentence description>
   Expected: <correct pattern>
   Actual:   <what the diff shows>
 ```
@@ -199,6 +126,7 @@ See [examples.md](examples.md).
 ## References
 
 - [clang-format documentation](https://clang.llvm.org/docs/ClangFormat.html)
+- [clang-tidy documentation](https://clang.llvm.org/extra/clang-tidy/)
+- [cppcheck manual](https://cppcheck.sourceforge.io/manual.html)
 - [shellcheck wiki](https://www.shellcheck.net/wiki/)
-- [MISRA-C:2012 Guidelines](https://www.misra.org.uk/)
-- [Barr Group Embedded C Coding Standard](https://barrgroup.com/embedded-systems/books/embedded-c-coding-standard)
+- [SEI CERT C Coding Standard](https://wiki.sei.cmu.edu/confluence/display/c)
