@@ -1,3 +1,9 @@
+---
+name: peripheral-init
+description: Generate a small C peripheral init function from a hardware spec and constraints.
+license: MIT
+---
+
 # Skill: Peripheral Initialization Code Generator
 
 ## Purpose

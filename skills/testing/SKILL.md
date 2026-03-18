@@ -1,3 +1,9 @@
+---
+name: testing
+description: Write and run minimal C unit tests with gcc and a header-only helper, without installing a framework.
+license: MIT
+---
+
 # Skill: C Unit Testing (Minimal)
 
 ## Purpose

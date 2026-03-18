@@ -1,3 +1,9 @@
+---
+name: fault-decode
+description: Decode Cortex-M fault registers into a concise diagnosis and next steps.
+license: MIT
+---
+
 # Skill: Cortex-M Fault Decode
 
 ## Purpose

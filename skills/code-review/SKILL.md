@@ -1,3 +1,9 @@
+---
+name: code-review
+description: Run deterministic C/C++ review gates (style, risk checks) before AI or human review.
+license: MIT
+---
+
 # Skill: C/C++ Code Review Gate
 
 ## Purpose

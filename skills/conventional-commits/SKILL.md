@@ -1,3 +1,9 @@
+---
+name: conventional-commits
+description: Write and validate Git commit messages using the Conventional Commits spec.
+license: MIT
+---
+
 # Skill: Conventional Commits
 
 ## Purpose

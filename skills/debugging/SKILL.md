@@ -1,3 +1,9 @@
+---
+name: debugging
+description: Follow a structured debug workflow to collect evidence, form a root-cause, and verify a minimal fix.
+license: MIT
+---
+
 # Skill: Target Debugging
 
 ## Purpose
