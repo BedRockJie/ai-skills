@@ -1,9 +1,10 @@
 # AI Skills Library
 
-A small library of reusable skills for CLI agents and coding assistants.
+A reusable `skills` integration library for CLI agents and coding assistants.
 
-This repo includes skills for review, testing, debugging, commit hygiene, and
-some hardware-specific tasks.
+This repo is not just for writing original skills. Its main job is to collect,
+adapt, validate, and document skills that are actually useful across different
+projects.
 
 Works well with:
 
@@ -17,6 +18,12 @@ Works well with:
 
 A skill is not a knowledge base. It is a procedure. It tells an agent what to
 do, in what order, and what output to produce.
+
+This repository is organized around three practical goals:
+
+- collect high-value skills from different ecosystems
+- normalize them so they can be reused in real projects
+- document how to install and apply them per project
 
 Each skill should include:
 
@@ -34,6 +41,12 @@ Good skills are:
 - Composable
 - Action-oriented
 
+Good integrations are:
+
+- Source-aware
+- Tool-compatible
+- Project-oriented
+
 ## Structure
 
 ```text
@@ -47,6 +60,7 @@ skills/
 
 references/ - Attribution for external sources
 templates/  - Templates for new skills
+docs/       - Integration notes, workflows, and project usage
 ```
 
 Some skills are general. Some are specialized.
@@ -59,6 +73,11 @@ Point your agent to the relevant `SKILL.md` file.
 @file skills/code-review/SKILL.md
 ```
 
+For the bigger picture, see:
+
+- [docs/skill-integration-guide.md](/home/emb/workspces/code-nv/ai-skills/docs/skill-integration-guide.md)
+- [docs/skill-import-sop.md](/home/emb/workspces/code-nv/ai-skills/docs/skill-import-sop.md)
+
 ## Validation
 
 Run:
@@ -70,10 +89,23 @@ GitHub Actions runs the same checks on pushes and pull requests.
 
 ## Adding a New Skill
 
-1. Copy `templates/skill-template.md` into a new folder under `skills/`
-2. Fill in the sections
-3. Add `examples.md` if it helps
-4. Open a PR
+There are two supported paths:
+
+1. Create a native skill in this repo from `templates/skill-template.md`
+2. Import an external skill, then adapt and document it for local use
+
+Example external import:
+
+```bash
+npx skills add https://github.com/anthropics/skills --skill pptx
+```
+
+When importing from another ecosystem:
+
+- keep the upstream source traceable
+- add or preserve required front matter
+- validate it locally with `python3 scripts/validate_skills.py`
+- document how that skill should be used in project contexts
 
 ## References
 
